@@ -1,0 +1,11 @@
+export const CHAR_STAR = '*';
+export const CHAR_SLASH = '/';
+export const MULTI_LINE_COMMENT_START = '/*';
+export const SINGLE_LINE_COMMENT_START = '//';
+export const CHAR_BACKSLASH = '\\';
+export const CHAR_SINGLE_QUOTE = "'";
+export const CHAR_DOUBLE_QUOTE = '"';
+export const CHAR_LEFT_BRACKET = '[';
+export const CHAR_RIGHT_BRACKET = ']';
+export const CHAR_DOT = '.';
+export const SPREAD = '...';
