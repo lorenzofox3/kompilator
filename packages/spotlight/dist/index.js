@@ -1,8 +1,8 @@
 (function (global, factory) {
-	typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports) :
-	typeof define === 'function' && define.amd ? define(['exports'], factory) :
-	(factory((global.tokenizer = {})));
-}(this, (function (exports) { 'use strict';
+	typeof exports === 'object' && typeof module !== 'undefined' ? factory() :
+	typeof define === 'function' && define.amd ? define(factory) :
+	(factory());
+}(this, (function () { 'use strict';
 
 const sourceStream = (code) => {
   let index = 0;
@@ -58,10 +58,12 @@ const categories = {
   NumericLiteral: 6,
   StringLiteral: 7,
   RegularExpressionLiteral: 8,
-  Template: 9,
-  TemplateHead: 10,
-  TemplateMiddle: 11,
-  TemplateTail: 12
+  BooleanLiteral: 9,
+  NullLiteral: 10,
+  Template: 11,
+  TemplateHead: 12,
+  TemplateMiddle: 13,
+  TemplateTail: 14
 };
 
 //defined as keywords
@@ -403,20 +405,12 @@ const streamTokens = (code, scanner$$1) => {
   }
 };
 
-let defaultFilter = t => t.type >= 4;
-const defaultOptions = {
-  scanner: defaultScanner,
-  tokenRegistry: defaultRegistry,
-  evaluate:defaultRegistry.evaluate,
-  filter: defaultFilter
-};
-
 // a standalone tokenizer (ie uses some heuristics based on the last meaningful token to know how to scan a slash)
 // https://stackoverflow.com/questions/5519596/when-parsing-javascript-what-determines-the-meaning-of-a-slash
-const tokenize = function* (code, {scanner: scanner$$1 = defaultScanner, tokenRegistry: tokenRegistry$$1 = defaultRegistry, filter, evaluate} = defaultOptions) {
-  const filterFunc = lazyFilterWith(filter || defaultFilter);
-  const mapFunc = lazyMapWith(evaluate || tokenRegistry$$1.evaluate);
-  const filterMap = iter => mapFunc(filterFunc(iter)); // some sort of compose (note: we could improve perf by setting the filter map through a sequence of if but it would be less flexible)
+const tokenize = function* (code, opts = {}, scanner$$1 = defaultScanner, tokenRegistry$$1 = defaultRegistry) {
+  const filter = lazyFilterWith(opts.filter || (t => t.type >= 4));
+  const map = lazyMapWith(opts.evaluate || tokenRegistry$$1.evaluate);
+  const filterMap = iter => map(filter(iter)); // some sort of compose (note: we could improve perf by setting the filter map through a sequence of if but it would be less flexible)
   const stream = streamTokens(code, scanner$$1);
 
   for (let t of filterMap(stream)) {
@@ -431,12 +425,7 @@ const tokenize = function* (code, {scanner: scanner$$1 = defaultScanner, tokenRe
   }
 };
 
-exports.streamTokens = streamTokens;
-exports.tokenize = tokenize;
-exports.tokenRegistry = tokenRegistry;
-exports.scanner = scanner;
-
-Object.defineProperty(exports, '__esModule', { value: true });
+console.log(tokenize('function(){}'));
 
 })));
 //# sourceMappingURL=index.js.map

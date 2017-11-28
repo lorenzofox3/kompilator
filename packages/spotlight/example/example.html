@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Title</title>
+  <link href="theme.css" rel="stylesheet" type="text/css">
+</head>
+<body>
+<main>
+  <pre class="sl-dark"><code class="sl-js sl-show-lines">export const bootstrap = ({selector='code.sl-js > pre'} ={selector:'code.sl-js > pre'}) => {
+  //sequentially highlight code (in the order of the document)
+  for(let t of document.querySelectorAll(selector)){
+   const code = t.textContent;
+   code.innerHTML = '';
+   const blocks = highlight(code)[Symbol.iterator]();
+
+    const append = () => {
+      const {value,done} = blocks.next();
+      code.append(value);
+
+      if(done === false){
+        setTimeout(append,60);
+      }
+    };
+    append();
+  }
+};</code></pre>
+  <!--<pre><code class="sl-js sl-show-lines">export const bootstrap = ({selector='code.sl-js > pre'} ={selector:'code.sl-js > pre'}) => {-->
+
+  <!--//sequentially highlight code (in the order of the document)-->
+  <!--for(let t of document.querySelectorAll(selector)){-->
+   <!--const code = t.textContent;-->
+   <!--code.innerHTML = '';-->
+   <!--const blocks = highlight(code)[Symbol.iterator]();-->
+
+    <!--const append = () => {-->
+      <!--const {value,done} = blocks.next();-->
+      <!--code.append(value);-->
+
+      <!--if(done === false){-->
+        <!--setTimeout(append,60);-->
+      <!--}-->
+    <!--};-->
+    <!--append();-->
+  <!--}-->
+<!--};</code></pre>-->
+</main>
+<script src="./dist/index.js" ></script>
+</body>
+</html>

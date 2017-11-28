@@ -26,12 +26,20 @@ export const streamTokens = (code, scanner) => {
   }
 };
 
+let defaultFilter = t => t.type >= 4;
+const defaultOptions = {
+  scanner: defaultScanner,
+  tokenRegistry: defaultRegistry,
+  evaluate:defaultRegistry.evaluate,
+  filter: defaultFilter
+};
+
 // a standalone tokenizer (ie uses some heuristics based on the last meaningful token to know how to scan a slash)
 // https://stackoverflow.com/questions/5519596/when-parsing-javascript-what-determines-the-meaning-of-a-slash
-export const tokenize = function* (code, opts = {}, scanner = defaultScanner, tokenRegistry = defaultRegistry) {
-  const filter = lazyFilterWith(opts.filter || (t => t.type >= 4));
-  const map = lazyMapWith(opts.evaluate || tokenRegistry.evaluate);
-  const filterMap = iter => map(filter(iter)); // some sort of compose (note: we could improve perf by setting the filter map through a sequence of if but it would be less flexible)
+export const tokenize = function* (code, {scanner = defaultScanner, tokenRegistry = defaultRegistry, filter, evaluate} = defaultOptions) {
+  const filterFunc = lazyFilterWith(filter || defaultFilter);
+  const mapFunc = lazyMapWith(evaluate || tokenRegistry.evaluate);
+  const filterMap = iter => mapFunc(filterFunc(iter)); // some sort of compose (note: we could improve perf by setting the filter map through a sequence of if but it would be less flexible)
   const stream = streamTokens(code, scanner);
 
   for (let t of filterMap(stream)) {

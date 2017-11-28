@@ -8,12 +8,10 @@ export const categories = {
   NumericLiteral: 6,
   StringLiteral: 7,
   RegularExpressionLiteral: 8,
-  BooleanLiteral: 9,
-  NullLiteral: 10,
-  Template: 11,
-  TemplateHead: 12,
-  TemplateMiddle: 13,
-  TemplateTail: 14
+  Template: 9,
+  TemplateHead: 10,
+  TemplateMiddle: 11,
+  TemplateTail: 12
 };
 
 //defined as keywords

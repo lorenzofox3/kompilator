@@ -1,0 +1,48 @@
+code.sl-js {
+    line-height: var(--sl-line-height, 1.4);
+    counter-reset: code-line;
+}
+
+code.sl-show-lines {
+    counter-reset: code-line;
+}
+
+code.sl-show-lines div.sl-line::before {
+    display: inline-block;
+    counter-increment: code-line;
+    content: counter(code-line);
+    width: var(--sl-line-number-width, 3em);
+    color: gray;
+}
+
+.sl-k {
+    color: var(--sl-k-color, #0048ffb5);
+    font-weight: bolder;
+}
+
+.sl-p {
+    color: var(--sl-p-color, #bf6868);
+}
+
+.sl-c {
+    color: var(--sl-c-color, #66906a);
+}
+
+.sl-i {
+    color: var(--sl-i-color, #566071);
+    font-style: italic;
+}
+
+.sl-l {
+    color: var(--sl-l-color, purple);
+}
+
+.sl-dark {
+    background: rgb(40, 44, 52);
+    padding: 1em 0.5em;
+    --sl-i-color:rgb(240,240,240);
+    --sl-k-color:rgb(121, 182, 242);
+    --sl-p-color:rgb(236, 162, 128);
+    --sl-l-color:rgb(141, 200, 145);
+    --sl-c-color:rgb(95, 179, 179);
+}
