@@ -7,7 +7,8 @@
 </head>
 <body>
 <main>
-  <pre class="sl-dark"><code class="sl-js sl-show-lines">export const bootstrap = ({selector='code.sl-js > pre'} ={selector:'code.sl-js > pre'}) => {
+  <h2>Auto bootstrapped</h2>
+  <pre><code id="bootstrap" class="sl-js">export const bootstrap = ({selector='code.sl-js > pre'} ={selector:'code.sl-js > pre'}) => {
   //sequentially highlight code (in the order of the document)
   for(let t of document.querySelectorAll(selector)){
    const code = t.textContent;
@@ -25,25 +26,8 @@
     append();
   }
 };</code></pre>
-  <!--<pre><code class="sl-js sl-show-lines">export const bootstrap = ({selector='code.sl-js > pre'} ={selector:'code.sl-js > pre'}) => {-->
-
-  <!--//sequentially highlight code (in the order of the document)-->
-  <!--for(let t of document.querySelectorAll(selector)){-->
-   <!--const code = t.textContent;-->
-   <!--code.innerHTML = '';-->
-   <!--const blocks = highlight(code)[Symbol.iterator]();-->
-
-    <!--const append = () => {-->
-      <!--const {value,done} = blocks.next();-->
-      <!--code.append(value);-->
-
-      <!--if(done === false){-->
-        <!--setTimeout(append,60);-->
-      <!--}-->
-    <!--};-->
-    <!--append();-->
-  <!--}-->
-<!--};</code></pre>-->
+  <h2>Very long file rendered incrementally on scroll</h2>
+  <pre class="sl-dark"><code id="long-file" class="sl-js sl-show-lines"></code></pre>
 </main>
 <script src="./dist/index.js" ></script>
 </body>

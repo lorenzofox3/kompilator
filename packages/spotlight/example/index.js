@@ -1,18 +1,15 @@
-//generic bootstrap
-// import {bootstrap} from "../src/bootstrap";
-//
-// bootstrap();
-
-import {spotlight} from "../src/index";
-
-const lineCount = 200;
-const highlight = spotlight({lineCount: lineCount});
-
-const [container] = document.querySelectorAll('code');
+import {spotlight, bootstrap} from "../src/index";
 
 (async function () {
 
-  const resp = await fetch('./react.js');
+  // 1. automatic bootstrap
+  bootstrap({selector: '#bootstrap'});
+
+  // 2. interesting use case: using intersection observer api to render very long file efficiently
+  const lineCount = 200;
+  const highlight = spotlight({lineCount: lineCount});
+  const container = document.getElementById('long-file');
+  const resp = await fetch('./jquery.js'); // > 8000 lines
   const text = await resp.text();
 
   const stream = highlight(text)[Symbol.iterator]();
@@ -28,28 +25,26 @@ const [container] = document.querySelectorAll('code');
     threshold: 0
   };
 
-  const observer = new IntersectionObserver((entries) => {
+  const observer = new IntersectionObserver(([entry]) => {
 
-    if (entries[0].isIntersecting) {
+    if (entry.isIntersecting) {
+
       const {value, done} = stream.next();
-
       strech++;
-
       if (value) {
         container.append(value);
       }
-
       if (done === true) {
         observer.disconnect();
       } else {
         observer.unobserve(sentinel);
         let sentinelIndex = Math.floor((strech - 1) * lineCount + lineCount / 4);
-        console.log(sentinelIndex);
+        console.log('sentinel index: ' + sentinelIndex);
         sentinel = container.children[sentinelIndex];
         observer.observe(sentinel);
       }
     }
-  },options);
+  }, options);
 
   observer.observe(sentinel);
 

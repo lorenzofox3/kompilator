@@ -438,66 +438,6 @@ const classNames = {
 const lineTerminatorRegex = /[\u000a\u000d\u2028\u2029]/;
 const defaultTokenRegistry = tokenRegistry();
 
-const spotlight = ({tokens = defaultTokenRegistry, lineCount = 100} = {
-  tokens: defaultTokenRegistry,
-  lineCount: 100
-}) => {
-
-  const block = withLine({count: lineCount});
-
-  function* highlight (code) {
-    for (let t of tokenize(code, {tokenRegistry: tokens, filter: () => true})) {
-      let node = t.type === categories.WhiteSpace || t.type === categories.LineTerminator ?
-        document.createTextNode(t.rawValue) :
-        document.createElement('span');
-      switch (t.type) {
-        case categories.WhiteSpace:
-        case categories.LineTerminator:
-          break;
-        case categories.SingleLineComment: {
-          node.classList.add(classNames.comment);
-          break;
-        }
-        case categories.MultiLineComment: {
-          //we split by lines
-          const split = t.rawValue.split(lineTerminatorRegex);
-          for (let i = 0; i < split.length; i++) {
-            const n = document.createElement('span');
-            n.classList.add(classNames.comment);
-            n.textContent = split[i];
-            yield {node:n, token:t};
-            if (i + 1 < split.length) {
-              yield {node:document.createTextNode('\n'),token:{type:categories.LineTerminator}};
-            }
-          }
-          continue;
-        }
-        case categories.NumericLiteral:
-        case categories.StringLiteral:
-        case categories.RegularExpressionLiteral:
-        case tokens.get('null'):
-        case tokens.get('true'):
-        case tokens.get('false'): {
-          node.classList.add(classNames.literal);
-          break;
-        }
-        case categories.Identifier: {
-          node.classList.add(classNames.identifier);
-          break;
-        }
-        default: {
-          const className = t.isReserved ? classNames.keyword : classNames.punctuator;
-          node.classList.add(className);
-        }
-      }
-      node.textContent = t.rawValue;
-      yield {token: t, node};
-    }
-  }
-
-  return code => block(highlight(code))[Symbol.iterator]();
-};
-
 const freshLine = () => {
   const line = document.createElement('div');
   line.classList.add('sl-line');
@@ -536,19 +476,103 @@ const withLine = ({count}) => function* (iterable) {
   yield fragment;
 };
 
-//generic bootstrap
-// import {bootstrap} from "../src/bootstrap";
-//
-// bootstrap();
+const spotlight = ({tokens = defaultTokenRegistry, lineCount = 100} = {
+  tokens: defaultTokenRegistry,
+  lineCount: 100
+}) => {
 
-const lineCount = 200;
-const highlight = spotlight({lineCount: lineCount});
+  const block = withLine({count: lineCount});
 
-const [container] = document.querySelectorAll('code');
+  function* highlight (code) {
+    for (let t of tokenize(code, {tokenRegistry: tokens, filter: () => true})) {
+      let node = t.type === categories.WhiteSpace || t.type === categories.LineTerminator ?
+        document.createTextNode(t.rawValue) :
+        document.createElement('span');
+      switch (t.type) {
+        case categories.WhiteSpace:
+        case categories.LineTerminator:
+          break;
+        case categories.SingleLineComment: {
+          node.classList.add(classNames.comment);
+          break;
+        }
+        case categories.MultiLineComment: {
+          //we split by lines
+          const split = t.rawValue.split(lineTerminatorRegex);
+          for (let i = 0; i < split.length; i++) {
+            const n = document.createElement('span');
+            n.classList.add(classNames.comment);
+            n.textContent = split[i];
+            yield {node: n, token: t};
+            if (i + 1 < split.length) {
+              yield {node: document.createTextNode('\n'), token: {type: categories.LineTerminator}};
+            }
+          }
+          continue;
+        }
+        case categories.NumericLiteral:
+        case categories.StringLiteral:
+        case categories.RegularExpressionLiteral:
+        case tokens.get('null'):
+        case tokens.get('true'):
+        case tokens.get('false'): {
+          node.classList.add(classNames.literal);
+          break;
+        }
+        case categories.Identifier: {
+          node.classList.add(classNames.identifier);
+          break;
+        }
+        default: {
+          const className = t.isReserved ? classNames.keyword : classNames.punctuator;
+          node.classList.add(className);
+        }
+      }
+      node.textContent = t.rawValue;
+      yield {token: t, node};
+    }
+  }
+
+  return code => block(highlight(code))[Symbol.iterator]();
+};
+
+//default highlight;
+const highlight = spotlight();
+
+const bootstrap = ({selector = 'code.sl-js'} = {selector: 'code.sl-js'}) => {
+
+  //sequentially highlight code (in the order of the document)
+  for (let t of document.querySelectorAll(selector)) {
+    const code = t.textContent;
+    t.innerHTML = '';
+    const blocks = highlight(code)[Symbol.iterator]();
+
+    const append = () => {
+
+      const {value, done} = blocks.next();
+
+      if (value) {
+        t.append(value);
+      }
+
+      if (done === false) {
+        setTimeout(append, 60); //make browser render
+      }
+    };
+    append();
+  }
+};
 
 (async function () {
 
-  const resp = await fetch('./react.js');
+  // 1. automatic bootstrap
+  bootstrap({selector: '#bootstrap'});
+
+  // 2. interesting use case: using intersection observer api to render very long file efficiently
+  const lineCount = 200;
+  const highlight = spotlight({lineCount: lineCount});
+  const container = document.getElementById('long-file');
+  const resp = await fetch('./jquery.js'); // > 8000 lines
   const text = await resp.text();
 
   const stream = highlight(text)[Symbol.iterator]();
@@ -564,28 +588,26 @@ const [container] = document.querySelectorAll('code');
     threshold: 0
   };
 
-  const observer = new IntersectionObserver((entries) => {
+  const observer = new IntersectionObserver(([entry]) => {
 
-    if (entries[0].isIntersecting) {
+    if (entry.isIntersecting) {
+
       const {value, done} = stream.next();
-
       strech++;
-
       if (value) {
         container.append(value);
       }
-
       if (done === true) {
         observer.disconnect();
       } else {
         observer.unobserve(sentinel);
         let sentinelIndex = Math.floor((strech - 1) * lineCount + lineCount / 4);
-        console.log(sentinelIndex);
+        console.log('sentinel index: ' + sentinelIndex);
         sentinel = container.children[sentinelIndex];
         observer.observe(sentinel);
       }
     }
-  },options);
+  }, options);
 
   observer.observe(sentinel);
 
