@@ -378,8 +378,24 @@ const scanner = (lexicalRules = ECMAScriptLexicalGrammar.map(g => g())) => {
 
 var defaultScanner = scanner();
 
+/* Note
+
+we could greatly improve perf by directly yielding filtered (and evaluated token?) at the scanner level instead of passing every lexeme through a lazy stream combinators pipe chain,
+however we would lost the great flexibility we have here !
+
+for example if we simply ignored white space, line terminators, etc.
+our filter combinator would have to run much less (at least for big files)
+
+bottom line: we value more modularity and flexibility of the system over performance
+
+todo: later we can give ability to the consumer to configure the scanner to perform better
+
+*/
+
+
 //return an iterable sequence of lexemes (note it can only be consumed once like a generator)
-const streamTokens = (code, scanner$$1) => {
+//The consumer (like a parser) will have to handle the syntactic state and the token evaluation by itself
+const lexemes = (code, scanner$$1) => {
   let isRegexpAllowed = true;
   const source = sourceStream(code);
   return {
@@ -404,7 +420,7 @@ let defaultFilter = t => t.type >= 4;
 const defaultOptions = {
   scanner: defaultScanner,
   tokenRegistry: defaultRegistry,
-  evaluate:defaultRegistry.evaluate,
+  evaluate: defaultRegistry.evaluate,
   filter: defaultFilter
 };
 
@@ -413,8 +429,8 @@ const defaultOptions = {
 const tokenize = function* (code, {scanner: scanner$$1 = defaultScanner, tokenRegistry: tokenRegistry$$1 = defaultRegistry, filter, evaluate} = defaultOptions) {
   const filterFunc = lazyFilterWith(filter || defaultFilter);
   const mapFunc = lazyMapWith(evaluate || tokenRegistry$$1.evaluate);
-  const filterMap = iter => mapFunc(filterFunc(iter)); // some sort of compose (note: we could improve perf by setting the filter map through a sequence of if but it would be less flexible)
-  const stream = streamTokens(code, scanner$$1);
+  const filterMap = iter => mapFunc(filterFunc(iter));
+  const stream = lexemes(code, scanner$$1);
 
   for (let t of filterMap(stream)) {
     yield t;
@@ -436,6 +452,8 @@ const classNames = {
   literal: 'sl-l',
 };
 const lineTerminatorRegex = /[\u000a\u000d\u2028\u2029]/;
+
+// we use our own token registry so we can refer to it when mapping tokens to classNames
 const defaultTokenRegistry = tokenRegistry();
 
 const freshLine = () => {
@@ -484,6 +502,7 @@ const spotlight = ({tokens = defaultTokenRegistry, lineCount = 100} = {
   const block = withLine({count: lineCount});
 
   function* highlight (code) {
+    //we return every lexemes (including white spaces, etc) so we can respect the code format
     for (let t of tokenize(code, {tokenRegistry: tokens, filter: () => true})) {
       let node = t.type === categories.WhiteSpace || t.type === categories.LineTerminator ?
         document.createTextNode(t.rawValue) :
@@ -538,8 +557,10 @@ const spotlight = ({tokens = defaultTokenRegistry, lineCount = 100} = {
 
 //default highlight;
 const highlight = spotlight();
+const defaultSelector = 'code.sl-js';
 
-const bootstrap = ({selector = 'code.sl-js'} = {selector: 'code.sl-js'}) => {
+//bootstrap takes all <code> elements matching a css selector and highlight its content by chunk (to let the browser render by parts)
+const bootstrap = ({selector = defaultSelector} = {selector: defaultSelector}) => {
 
   //sequentially highlight code (in the order of the document)
   for (let t of document.querySelectorAll(selector)) {
@@ -556,7 +577,7 @@ const bootstrap = ({selector = 'code.sl-js'} = {selector: 'code.sl-js'}) => {
       }
 
       if (done === false) {
-        setTimeout(append, 60); //make browser render
+        setTimeout(append, 60); //let a window of time for the browser to render
       }
     };
     append();

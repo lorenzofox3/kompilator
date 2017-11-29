@@ -13,7 +13,9 @@
     "tokenizer",
     "compiler",
     "ecmascript",
-    "tool"
+    "parser",
+    "tool",
+    "tooling"
   ],
   "repository": "https://github.com/lorenzofox3/kompilator/tree/master/packages/tokenizer",
   "author": "Laurent Renard",

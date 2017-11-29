@@ -1,5 +1,5 @@
-import {tokenRegistry, tokenize} from "@kompilator/tokenizer";
-import {categories} from "../../tokenizer/src/tokens";
+import {tokenize} from "@kompilator/tokenizer";
+import {categories, tokenRegistry} from "../../tokenizer/src/tokens";
 
 const classNames = {
   keyword: 'sl-k',
@@ -9,6 +9,8 @@ const classNames = {
   literal: 'sl-l',
 };
 const lineTerminatorRegex = /[\u000a\u000d\u2028\u2029]/;
+
+// we use our own token registry so we can refer to it when mapping tokens to classNames
 const defaultTokenRegistry = tokenRegistry();
 
 const freshLine = () => {
@@ -57,6 +59,7 @@ export const spotlight = ({tokens = defaultTokenRegistry, lineCount = 100} = {
   const block = withLine({count: lineCount});
 
   function* highlight (code) {
+    //we return every lexemes (including white spaces, etc) so we can respect the code format
     for (let t of tokenize(code, {tokenRegistry: tokens, filter: () => true})) {
       let node = t.type === categories.WhiteSpace || t.type === categories.LineTerminator ?
         document.createTextNode(t.rawValue) :
@@ -111,8 +114,10 @@ export const spotlight = ({tokens = defaultTokenRegistry, lineCount = 100} = {
 
 //default highlight;
 const highlight = spotlight();
+const defaultSelector = 'code.sl-js';
 
-export const bootstrap = ({selector = 'code.sl-js'} = {selector: 'code.sl-js'}) => {
+//bootstrap takes all <code> elements matching a css selector and highlight its content by chunk (to let the browser render by parts)
+export const bootstrap = ({selector = defaultSelector} = {selector: defaultSelector}) => {
 
   //sequentially highlight code (in the order of the document)
   for (let t of document.querySelectorAll(selector)) {
@@ -129,7 +134,7 @@ export const bootstrap = ({selector = 'code.sl-js'} = {selector: 'code.sl-js'}) 
       }
 
       if (done === false) {
-        setTimeout(append, 60); //make browser render
+        setTimeout(append, 60); //let a window of time for the browser to render
       }
     };
     append();

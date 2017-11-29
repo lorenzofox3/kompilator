@@ -1,0 +1,40 @@
+{
+  "name": "@kompilator/parser",
+  "version": "0.0.0",
+  "description": "ecmascript parser",
+  "main": "./dist/index.js",
+  "jsnext:main": "./src/index.js",
+  "module": "./src/index.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "rollup -c ./rollup/test.js && node ./test/dist/index.js",
+    "build": "rollup -c ./rollup/dist.js",
+    "build:example": "rollup -c ./rollup/example.js",
+    "example": "npm run build:example && node ./example/dist/index.js",
+    "example:browser": "npm run build:example && http-server"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lorenzofox3/kompilator/tree/master/packages/parser"
+  },
+  "keywords": [
+    "ecmascript",
+    "javascript",
+    "parser",
+    "tooling",
+    "tool",
+    "compiler",
+    "ast"
+  ],
+  "author": "Laurent Renard",
+  "license": "MIT",
+  "devDependencies": {
+    "@kompilator/tokenizer": "^0.0.1"
+  },
+  "dependencies": {
+    "acorn": "^5.2.1",
+    "http-server": "^0.10.0"
+  }
+}

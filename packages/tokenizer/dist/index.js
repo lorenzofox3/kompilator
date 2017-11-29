@@ -382,7 +382,8 @@ const scanner = (lexicalRules = ECMAScriptLexicalGrammar.map(g => g())) => {
 var defaultScanner = scanner();
 
 //return an iterable sequence of lexemes (note it can only be consumed once like a generator)
-const streamTokens = (code, scanner$$1) => {
+//The consumer (like a parser) will have to handle the syntactic state and the token evaluation by itself
+const lexemes = (code, scanner$$1) => {
   let isRegexpAllowed = true;
   const source = sourceStream(code);
   return {
@@ -416,8 +417,8 @@ const defaultOptions = {
 const tokenize = function* (code, {scanner: scanner$$1 = defaultScanner, tokenRegistry: tokenRegistry$$1 = defaultRegistry, filter, evaluate} = defaultOptions) {
   const filterFunc = lazyFilterWith(filter || defaultFilter);
   const mapFunc = lazyMapWith(evaluate || tokenRegistry$$1.evaluate);
-  const filterMap = iter => mapFunc(filterFunc(iter)); // some sort of compose (note: we could improve perf by setting the filter map through a sequence of if but it would be less flexible)
-  const stream = streamTokens(code, scanner$$1);
+  const filterMap = iter => mapFunc(filterFunc(iter)); // some sort of compose (note: we could improve perf by setting the filter map through a sequence of "if" but it would be less flexible)
+  const stream = lexemes(code, scanner$$1);
 
   for (let t of filterMap(stream)) {
     yield t;
@@ -431,10 +432,8 @@ const tokenize = function* (code, {scanner: scanner$$1 = defaultScanner, tokenRe
   }
 };
 
-exports.streamTokens = streamTokens;
+exports.lexemes = lexemes;
 exports.tokenize = tokenize;
-exports.tokenRegistry = tokenRegistry;
-exports.scanner = scanner;
 
 Object.defineProperty(exports, '__esModule', { value: true });
 
