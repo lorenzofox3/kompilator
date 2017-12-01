@@ -1,6 +1,7 @@
 import {default as stream, forwardArrityOne} from './source';
 import {default as defaultRegistry} from './tokens';
 import {parseStatementList} from "./statements";
+import {Program} from "./ast";
 
 export const parserFactory = (tokens = defaultRegistry) => {
 
@@ -42,10 +43,9 @@ export const parserFactory = (tokens = defaultRegistry) => {
           return parseInfix(parser, left, precedence, exits);
         },
         program () {
-          return {
-            type: 'Program',
+          return Program({
             body: parseStatementList(parser)
-          };
+          });
         },
         module () {
           throw new Error('not implemented');

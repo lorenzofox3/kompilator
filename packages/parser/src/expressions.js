@@ -1,50 +1,51 @@
 import {categories} from "../../tokenizer/src/tokens";
 import {parseBindingIdentifierOrPattern, parseBlockStatement, parseFormalParameters} from "./statements";
+import * as ast from "./ast";
+
+//todo 1. check whether a real compose affects performances or not
+//todo 2. these could be decoratos like @Infix(ast.foo) etc or eve @Node(ast.blah)
+//compose one with arrity one
+const Prefix = (factory, fn) => parser => factory(fn(parser));
+// compose with arrity 3
+const Infix = (factory, fn) => (parser, left, operator) => factory(fn(parser, left, operator));
 
 //prefix
-const asValue = (type, key) => (parser) => {
+const asValue = (type, key) => Prefix(type, (parser) => {
   const {value: token} = parser.next();
-  const node = {type};
-  if (key) {
-    node[key] = token.value;
-  }
-  return node;
-};
-const asUnaryExpression = (type) => (parser) => {
+  return key ? {[key]: token.value} : {};
+});
+const asUnaryExpression = (type) => Prefix(type, (parser) => {
   const {value: token} = parser.next();
   return {
-    type,
     operator: token.value,
     argument: parser.expression(parser.getPrefixPrecedence(token)),
     prefix: true
   };
-};
+});
 export const parseGroupExpression = (parser) => {
   parser.expect('(');
   const exp = parser.expression();
   parser.expect(')');
   return exp;
 };
-export const parseUnaryExpression = asUnaryExpression('UnaryExpression', 'operator');
-export const parseThisExpression = asValue('ThisExpression');
-export const parseLiteralExpression = asValue('Literal', 'value');
-export const parseIdentifierExpression = asValue('Identifier', 'name');
-export const parseRegularExpressionLiteral = parser => {
+export const parseUnaryExpression = asUnaryExpression(ast.UnaryExpression);
+export const parseThisExpression = asValue(ast.ThisExpression);
+export const parseLiteralExpression = asValue(ast.Literal, 'value');
+export const parseIdentifierExpression = asValue(ast.Identifier, 'name');
+export const parseRegularExpressionLiteral = Prefix(ast.Literal, parser => {
   const {value: regexp} = parser.next();
   return {
-    type: 'Literal',
     value: regexp.value,
     regex: {
       pattern: regexp.value.source,
       flags: regexp.value.flags
     }
   }
-};
-export const parseUpdateExpressionAsPrefix = asUnaryExpression('UpdateExpression');
-export const parseFunctionExpression = (parser) => {
+});
+export const parseUpdateExpressionAsPrefix = asUnaryExpression(ast.UpdateExpression);
+export const parseFunctionExpression = Prefix(ast.FunctionExpression, (parser) => {
   parser.expect('function');
   const node = {
-    type: 'FunctionExpression',
     id: null,
     async: false,
     generator: false
@@ -58,16 +59,15 @@ export const parseFunctionExpression = (parser) => {
   parser.expect(')');
   node.body = parseBlockStatement(parser);
   return node;
-};
-export const parseNewExpression = parser => {
+});
+export const parseNewExpression = Prefix(ast.NewExpression, parser => {
   const {value: newToken} = parser.expect('new');
   const callee = parser.expression(parser.getPrefixPrecedence(newToken));
   return {
-    type: 'NewExpression',
     callee: callee.callee ? callee.callee : callee,
     arguments: callee.arguments ? callee.arguments : []
   };
-};
+});
 
 //Arrays literals
 const parseArrayElements = (parser, elements = []) => {
@@ -83,15 +83,14 @@ const parseArrayElements = (parser, elements = []) => {
   }
   return parseArrayElements(parser, elements);
 };
-export const parseArrayLiteralExpression = (parser) => {
+export const parseArrayLiteralExpression = Prefix(ast.ArrayExpression, (parser) => {
   parser.expect('[');
   const node = {
-    type: 'ArrayExpression',
     elements: parseArrayElements(parser)
   };
   parser.expect(']');
   return node;
-};
+});
 
 const parsePropertyList = (parser, properties = []) => {
   const {value: nextToken} = parser.lookAhead();
@@ -106,7 +105,7 @@ const parsePropertyList = (parser, properties = []) => {
   return parsePropertyList(parser, properties);
 };
 const isPropertyName = (parser, token) => token === parser.get('[') || token.type === categories.Identifier || token.type === categories.NumericLiteral || token.type === categories.StringLiteral || token.isReserved === true;
-export const parseObjectPropertyExpression = parser => {
+export const parseObjectPropertyExpression = Prefix(ast.Property, parser => {
   const {value: nextToken} = parser.lookAhead();
   let key;
   let kind = 'init';
@@ -127,7 +126,6 @@ export const parseObjectPropertyExpression = parser => {
   }
 
   return {
-    type: 'Property',
     key,
     value,
     kind,
@@ -135,26 +133,24 @@ export const parseObjectPropertyExpression = parser => {
     method,
     shorthand
   };
-};
-export const parseObjectLiteralExpression = (parser) => {
+});
+export const parseObjectLiteralExpression = Prefix(ast.ObjectExpression, (parser) => {
   parser.expect('{');
   const node = {
-    type: 'ObjectExpression',
     properties: parsePropertyList(parser)
   };
   parser.expect('}');
   return node;
-};
+});
 
 //infix
-const asBinaryExpression = type => (parser, left, operator) => {
+const asBinaryExpression = type => Infix(type, (parser, left, operator) => {
   return {
-    type,
     left,
     right: parser.expression(parser.getInfixPrecedence(operator)),
     operator: operator.value
   };
-};
+});
 const parseArguments = (parser, expressions = []) => {
   const {value: parsableValue} = parser.lookAhead();
   const comma = parser.get(',');
@@ -172,13 +168,12 @@ const parseArguments = (parser, expressions = []) => {
   parser.eat();
   return parseArguments(parser, expressions);
 };
-export const parseAssignmentExpression = asBinaryExpression('AssignmentExpression');
-export const parseBinaryExpression = asBinaryExpression('BinaryExpression');
-export const parseLogicalExpression = asBinaryExpression('LogicalExpression');
-export const parseMemberAccessExpression = (parser, left, operator) => {
+export const parseAssignmentExpression = asBinaryExpression(ast.AssignmentExpression);
+export const parseBinaryExpression = asBinaryExpression(ast.BinaryExpression);
+export const parseLogicalExpression = asBinaryExpression(ast.LogicalExpression);
+export const parseMemberAccessExpression = Infix(ast.MemberExpression, (parser, left, operator) => {
   const computed = operator === parser.get('[');
   const node = {
-    type: 'MemberExpression',
     object: left,
     computed: computed,
     property: computed ? parser.expression() : parseIdentifierExpression(parser)
@@ -187,18 +182,15 @@ export const parseMemberAccessExpression = (parser, left, operator) => {
     parser.expect(']');
   }
   return node;
-};
-export const parseUpdateExpression = (parser, left, operator) => {
-  return {
-    type: 'UpdateExpression',
-    argument: left,
-    operator: operator.value,
-    prefix: false
-  };
-};
-export const parseConditionalExpression = (parser, test) => {
+});
+export const parseUpdateExpression = Infix(ast.UpdateExpression, (parser, left, operator) => ({
+  type: 'UpdateExpression',
+  argument: left,
+  operator: operator.value,
+  prefix: false
+}));
+export const parseConditionalExpression = Infix(ast.ConditionalExpression, (parser, test) => {
   const node = {
-    type: 'ConditionalExpression',
     test
   };
   const commaPrecedence = parser.getInfixPrecedence(parser.get(','));
@@ -206,18 +198,17 @@ export const parseConditionalExpression = (parser, test) => {
   parser.expect(':');
   node.alternate = parser.expression(commaPrecedence);
   return node;
-};
-export const parseCallExpression = (parser, callee) => {
+});
+export const parseCallExpression = Infix(ast.CallExpression, (parser, callee) => {
   const node = {
-    type: 'CallExpression',
     callee,
     arguments: parseArguments(parser)
   };
   parser.expect(')');
   return node;
-};
+});
 
-export const parseSequenceExpression = (parser, left) => {
+export const parseSequenceExpression = Infix(ast.SequenceExpression, (parser, left) => {
   let node = left;
   const comma = parser.get(',');
   const next = parser.expression(parser.getInfixPrecedence(comma));
@@ -230,4 +221,4 @@ export const parseSequenceExpression = (parser, left) => {
     }
   }
   return node;
-};
+});

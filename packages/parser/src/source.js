@@ -23,6 +23,9 @@ const tokenStream = ({scanner, tokenRegistry, filter, evaluate}) => {
     const stream = lexemes(code, scanner);
     const iterator = filterMap(stream)[Symbol.iterator]();
     const buffer = [];
+    let lastLoc;
+
+    const next = () => iterator.next();
 
     return forwardArrityOne({
       [Symbol.iterator] () {
@@ -32,7 +35,7 @@ const tokenStream = ({scanner, tokenRegistry, filter, evaluate}) => {
         if (buffer.length > offset) {
           return buffer[offset]
         }
-        buffer.push(iterator.next());
+        buffer.push(next());
         return this.lookAhead(offset);
       },
       eventually (expected) {
@@ -51,9 +54,7 @@ const tokenStream = ({scanner, tokenRegistry, filter, evaluate}) => {
         return nextToken;
       },
       next () {
-        const nextToken = buffer.length ? buffer.shift() : iterator.next();
-        // console.log(nextToken.value);
-        return nextToken;
+        return buffer.length ? buffer.shift() : next();
       },
       eat (number = 1) {
         const n = this.next();

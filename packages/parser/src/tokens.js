@@ -106,7 +106,7 @@ export const ECMAScriptTokenRegistry = () => {
   statementsMap.set(registry.get(';'),statements.parseEmptyStatement);
   statementsMap.set(registry.get('{'),statements.parseBlockStatement);
   statementsMap.set(registry.get('for'),statements.parseForStatement);
-  statementsMap.set(registry.get('var'),withEventualSemiColon(statements.parseVariableStatement));
+  statementsMap.set(registry.get('var'),withEventualSemiColon(statements.parseVariableDeclaration));
   statementsMap.set(registry.get('function'),statements.parseFunctionDeclaration);
   statementsMap.set(registry.get('return'),withEventualSemiColon(statements.parseReturnStatement));
   statementsMap.set(registry.get('break'),withEventualSemiColon(statements.parseBreakStatement));

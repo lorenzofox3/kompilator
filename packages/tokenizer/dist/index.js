@@ -4,18 +4,37 @@
 	(factory((global.tokenizer = {})));
 }(this, (function (exports) { 'use strict';
 
+//todo put track loc as an option ?
 const sourceStream = (code) => {
+  const lineTerminatorRegexp = /[\u000a\u000d\u2028\u2029]/g;
   let index = 0;
-  const advance = (number = 1) => {
-    index += number;
-  };
+  let col = 0;
+  let line = 1;
 
   const test = (regexp) => nextStretch().search(regexp) === 0;
   const nextSubStr = (count = 1) => code.substr(index, count);
   const seeNextAt = (offset = 0) => code[index + offset];
   const nextStretch = () => nextSubStr(3); //we need three chars to be really sure of the current lexical production
+  const loc = () => ({col, line});
+
+  const advance = (number = 1) => {
+    let lastLineIndex = 0;
+    // console.log(`col: ${col}`);
+    // console.log(`line: ${line}`);
+    const stretch = nextSubStr(number);
+    // console.log(`symbols: ${stretch}`);
+    // console.log('-------')
+    while (lineTerminatorRegexp.test(stretch)) {
+      line += 1;
+      col = 0;
+      lastLineIndex = lineTerminatorRegexp.lastIndex;
+    }
+    col += (number - lastLineIndex);
+    index += number;
+  };
 
   const stream = {
+    loc,
     test,
     nextSubStr,
     seeNextAt,
@@ -381,6 +400,21 @@ const scanner = (lexicalRules = ECMAScriptLexicalGrammar.map(g => g())) => {
 
 var defaultScanner = scanner();
 
+/* Note
+
+we could greatly improve perf by directly yielding filtered (and evaluated token?) at the scanner level instead of passing every lexeme through a lazy stream combinators pipe chain,
+however we would lost the great flexibility we have here !
+
+for example if we simply ignored white space, line terminators, etc.
+our filter combinator would have to run much less (at least for big files)
+
+bottom line: we value more modularity and flexibility of the system over performance
+
+todo: later we can give ability to the consumer to configure the scanner to perform better
+
+*/
+
+
 //return an iterable sequence of lexemes (note it can only be consumed once like a generator)
 //The consumer (like a parser) will have to handle the syntactic state and the token evaluation by itself
 const lexemes = (code, scanner$$1) => {
@@ -400,6 +434,9 @@ const lexemes = (code, scanner$$1) => {
     },
     disallowRegexp () {
       isRegexpAllowed = false;
+    },
+    loc () {
+      return source.loc();
     }
   }
 };
@@ -408,7 +445,7 @@ let defaultFilter = t => t.type >= 4;
 const defaultOptions = {
   scanner: defaultScanner,
   tokenRegistry: defaultRegistry,
-  evaluate:defaultRegistry.evaluate,
+  evaluate: defaultRegistry.evaluate,
   filter: defaultFilter
 };
 
@@ -417,7 +454,7 @@ const defaultOptions = {
 const tokenize = function* (code, {scanner: scanner$$1 = defaultScanner, tokenRegistry: tokenRegistry$$1 = defaultRegistry, filter, evaluate} = defaultOptions) {
   const filterFunc = lazyFilterWith(filter || defaultFilter);
   const mapFunc = lazyMapWith(evaluate || tokenRegistry$$1.evaluate);
-  const filterMap = iter => mapFunc(filterFunc(iter)); // some sort of compose (note: we could improve perf by setting the filter map through a sequence of "if" but it would be less flexible)
+  const filterMap = iter => mapFunc(filterFunc(iter));
   const stream = lexemes(code, scanner$$1);
 
   for (let t of filterMap(stream)) {

@@ -11,7 +11,11 @@ import functions from './functionDeclaration';
 import returns from './return';
 import labels from './label';
 import switches from './switch';
-
+import breakStatements from './break';
+import continueStatements from './continue';
+import withStatements from './with';
+import throwStatements from './throws';
+import tryCatch from './tryCatchFinally';
 
 export default zora()
   .test(empty)
@@ -25,4 +29,9 @@ export default zora()
   .test(functions)
   .test(switches)
   .test(labels)
-  .test(doWhile);
+  .test(doWhile)
+  .test(breakStatements)
+  .test(continueStatements)
+  .test(withStatements)
+  .test(throwStatements)
+  .test(tryCatch);

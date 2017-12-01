@@ -38,6 +38,9 @@ export const lexemes = (code, scanner) => {
     },
     disallowRegexp () {
       isRegexpAllowed = false;
+    },
+    loc () {
+      return source.loc();
     }
   }
 };

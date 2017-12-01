@@ -399,18 +399,37 @@ const lazyFilterWith = fn => function* (iterator) {
   }
 };
 
+//todo put track loc as an option ?
 const sourceStream = (code) => {
+  const lineTerminatorRegexp = /[\u000a\u000d\u2028\u2029]/g;
   let index = 0;
-  const advance = (number = 1) => {
-    index += number;
-  };
+  let col = 0;
+  let line = 1;
 
   const test = (regexp) => nextStretch().search(regexp) === 0;
   const nextSubStr = (count = 1) => code.substr(index, count);
   const seeNextAt = (offset = 0) => code[index + offset];
   const nextStretch = () => nextSubStr(3); //we need three chars to be really sure of the current lexical production
+  const loc = () => ({col, line});
+
+  const advance = (number = 1) => {
+    let lastLineIndex = 0;
+    // console.log(`col: ${col}`);
+    // console.log(`line: ${line}`);
+    const stretch = nextSubStr(number);
+    // console.log(`symbols: ${stretch}`);
+    // console.log('-------')
+    while (lineTerminatorRegexp.test(stretch)) {
+      line += 1;
+      col = 0;
+      lastLineIndex = lineTerminatorRegexp.lastIndex;
+    }
+    col += (number - lastLineIndex);
+    index += number;
+  };
 
   const stream = {
+    loc,
     test,
     nextSubStr,
     seeNextAt,
@@ -762,6 +781,21 @@ const scanner = (lexicalRules = ECMAScriptLexicalGrammar.map(g => g())) => {
 
 var defaultScanner = scanner();
 
+/* Note
+
+we could greatly improve perf by directly yielding filtered (and evaluated token?) at the scanner level instead of passing every lexeme through a lazy stream combinators pipe chain,
+however we would lost the great flexibility we have here !
+
+for example if we simply ignored white space, line terminators, etc.
+our filter combinator would have to run much less (at least for big files)
+
+bottom line: we value more modularity and flexibility of the system over performance
+
+todo: later we can give ability to the consumer to configure the scanner to perform better
+
+*/
+
+
 //return an iterable sequence of lexemes (note it can only be consumed once like a generator)
 //The consumer (like a parser) will have to handle the syntactic state and the token evaluation by itself
 const lexemes = (code, scanner$$1) => {
@@ -781,12 +815,202 @@ const lexemes = (code, scanner$$1) => {
     },
     disallowRegexp () {
       isRegexpAllowed = false;
+    },
+    loc () {
+      return source.loc();
     }
   }
 };
 
 // a standalone tokenizer (ie uses some heuristics based on the last meaningful token to know how to scan a slash)
 // https://stackoverflow.com/questions/5519596/when-parsing-javascript-what-determines-the-meaning-of-a-slash
+
+const nodeFactory = (type, proto = null) => obj => Object.assign(Object.create(proto), {type}, obj);
+
+//pefix nodes
+const UnaryExpression = nodeFactory('UnaryExpression', {
+  * [Symbol.iterator] () {
+    yield this.argument;
+  }
+});
+const ThisExpression = nodeFactory('ThisExpression');
+const Literal = nodeFactory('Literal');
+const Identifier = nodeFactory('Identifier');
+const UpdateExpression = nodeFactory('UpdateExpression', {
+  * [Symbol.iterator] () {
+    yield this.argument;
+  }
+});
+const FunctionExpression = nodeFactory('FunctionExpression', {
+  * [Symbol.iterator] () {
+    yield this.id;
+    yield* this.params;
+    yield this.body;
+  }
+});
+const NewExpression = nodeFactory('NewExpression', {
+  * [Symbol.iterator] () {
+    yield this.callee;
+    yield* this.arguments;
+  }
+});
+const ArrayExpression = nodeFactory('ArrayExpression', {
+  * [Symbol.iterator] () {
+    yield* this.elements;
+  }
+});
+const ObjectExpression = nodeFactory('ObjectExpression', {
+  * [Symbol.iterator] () {
+    yield* this.properties;
+  }
+});
+const Property = nodeFactory('Property', {
+  * [Symbol.iterator] () {
+    yield this.key;
+    yield this.value;
+  }
+});
+
+//infix nodes
+const asBinary = type => nodeFactory(type, {
+  * [Symbol.iterator] () {
+    yield this.left;
+    yield this.right;
+  }
+});
+const AssignmentExpression = asBinary('AssignmentExpression');
+const BinaryExpression = asBinary('BinaryExpression');
+const LogicalExpression = asBinary('LogicalExpression');
+const MemberExpression = nodeFactory('MemberExpression', {
+  * [Symbol.iterator] () {
+    yield this.object;
+    yield this.property;
+  }
+});
+const ConditionalExpression = nodeFactory('ConditionalExpression', {
+  * [Symbol.iterator] () {
+    yield this.test;
+    yield this.consequent;
+    yield this.alternate;
+  }
+});
+const CallExpression = nodeFactory('CallExpression', {
+  * [Symbol.iterator] () {
+    yield this.callee;
+    yield* this.arguments;
+  }
+});
+const SequenceExpression = nodeFactory('SequenceExpression', {
+  * [Symbol.iterator] () {
+    yield* this.expressions;
+  }
+});
+
+//statements nodes
+//todo refactoring with function expression
+const FunctionDeclaration = nodeFactory('FunctionDeclaration', {
+  * [Symbol.iterator] () {
+    yield this.id;
+    yield* this.params;
+    yield this.body;
+  }
+});
+//todo refactoring with conditional expression
+const IfStatement = nodeFactory('IfStatement', {
+  * [Symbol.iterator] () {
+    yield this.test;
+    yield this.consequent;
+    yield this.alternate;
+  }
+});
+const BlockStatement = nodeFactory('BlockStatement', {
+  * [Symbol.iterator] () {
+    yield* this.body;
+  }
+});
+const ExpressionStatement = nodeFactory('ExpressionStatement', {
+  * [Symbol.iterator] () {
+    yield this.expression;
+  }
+});
+const EmptyStatement = nodeFactory('EmptyStatement');
+const DebuggerStatement = nodeFactory('DebuggerStatement');
+const withArgument = (type) => nodeFactory(
+  type, {
+    * [Symbol.iterator] () {
+      yield this.argument;
+    }
+  });
+const ReturnStatement = withArgument('ReturnStatement');
+const BreakStatement = withArgument('BreakStatement');
+const ContinueStatement = withArgument('ContinueStatement');
+const WithStatement = nodeFactory('WithStatement', {
+  * [Symbol.iterator] () {
+    yield this.object;
+    yield this.body;
+  }
+});
+const SwitchStatement = nodeFactory('SwitchStatement', {
+  * [Symbol.iterator] () {
+    yield this.discriminant;
+    yield* this.cases;
+  }
+});
+
+const ThrowStatement = nodeFactory('ThrowStatement', {
+  * [Symbol.iterator] () {
+    yield this.expression;
+  }
+});
+const TryStatement = nodeFactory('TryStatement', {
+  * [Symbol.iterator] () {
+    yield this.block;
+    yield this.handler;
+    yield this.finalizer;
+  }
+});
+
+const WhileStatement = nodeFactory('WhileStatement', {
+  * [Symbol.iterator] () {
+    yield this.test;
+    yield this.body;
+  }
+});
+const DoWhileStatement = nodeFactory('DoWhileStatement', {
+  * [Symbol.iterator] () {
+    yield this.body;
+    yield this.test;
+  }
+});
+
+const VariableDeclaration = nodeFactory('VariableDeclaration', {
+  * [Symbol.iterator] () {
+    yield* this.declarations;
+  }
+});
+
+
+const LabeledStatement = nodeFactory('LabeledStatement', {
+  * [Symbol.iterator] () {
+    yield this.body;
+  }
+});
+
+const Program = nodeFactory('Program', {
+  * [Symbol.iterator] () {
+    yield* this.body;
+  }
+});
+
+//walk & traverse
+
+const Statement = (factory, fn) => {
+  if (!fn) {
+    return factory;
+  } else {
+    return parser => factory(fn(parser));
+  }
+};
 
 const parseStatementList = (parser, exit = ['}'], statements = []) => {
   const exitTokens = exit.map(s => parser.get(s)); // todo exit is not consistent with expression parser
@@ -797,20 +1021,15 @@ const parseStatementList = (parser, exit = ['}'], statements = []) => {
   statements.push(parseStatement(parser));
   return parseStatementList(parser, exit, statements);
 };
-
-const nodeTypeDecorator = (type) => fn => parser => Object.assign(fn(parser), {type});
-
 const withEventualSemiColon = (fn) => parser => {
   const node = fn(parser);
   parser.eventually(';');
   return node;
 };
-
 const parseExpressionOrLabeledStatement = parser => {
   const {value: nextToken} = parser.lookAhead(1);
   return nextToken === parser.get(':') ? parseLabeledStatement(parser) : withEventualSemiColon(parseExpressionStatement)(parser);
 };
-
 const parseStatement = (parser) => {
   parser.allowRegexp();
   const {value: nextToken} = parser.lookAhead();
@@ -830,11 +1049,9 @@ const parseFormalParameters = (parser, parameters = []) => {
   }
   return parseFormalParameters(parser, parameters);
 };
-
-const parseFunctionDeclaration = parser => {
+const parseFunctionDeclaration = Statement(FunctionDeclaration, parser => {
   parser.expect('function');
   const node = {
-    type: 'FunctionDeclaration',
     id: parseBindingIdentifierOrPattern(parser),
     async: false,
     generator: false
@@ -844,9 +1061,9 @@ const parseFunctionDeclaration = parser => {
   parser.expect(')');
   node.body = parseBlockStatement(parser);
   return node;
-};
+});
 
-const parseIfStatement = parser => {
+const parseIfStatement = Statement(IfStatement, parser => {
   parser.expect('if');
   parser.expect('(');
   const test = parser.expression();
@@ -857,80 +1074,64 @@ const parseIfStatement = parser => {
     alternate = parseStatement(parser);
   }
   return {
-    type: 'IfStatement',
     test,
     consequent,
     alternate
   };
-};
+});
 
-const parseBlockStatement = parser => {
+const parseBlockStatement = Statement(BlockStatement, parser => {
   parser.expect('{');
   const node = {
-    type: 'BlockStatement',
     body: parseStatementList(parser)
   };
   parser.expect('}');
   return node;
-};
+});
 
-const parseExpressionStatement = parser => {
-  const expression = parser.expression();
-  return {
-    type: 'ExpressionStatement',
-    expression: expression
-  };
-};
+const parseExpressionStatement = Statement(ExpressionStatement, parser => ({
+  expression: parser.expression()
+}));
 
-const parseEmptyStatement = nodeTypeDecorator('EmptyStatement')
-(parser => {
+const parseEmptyStatement = Statement(EmptyStatement, parser => {
   parser.expect(';');
-  return {};
 });
 
-const parseDebuggerStatement = nodeTypeDecorator('DebuggerStatement')
-(parser => {
-  parser.expect('debugger');
-  return {};
-});
+const parseDebuggerStatement = Statement(DebuggerStatement);
 
-const parseReturnStatement = nodeTypeDecorator('ReturnStatement')
-(parser => {
+const parseReturnStatement = Statement(ReturnStatement, parser => {
   parser.expect('return');
   return {
     argument: parser.expression()
   };
 });
 
-const parseBreakStatement = nodeTypeDecorator('BreakStatement')
-(parser => {
+const parseBreakStatement = Statement(BreakStatement, parser => {
   parser.expect('break');
   return {
-    argument: parser.expression(20)
-  }
+    label: parser.expression(20)
+  };
 });
 
-const parseContinueStatement = parser => {
+const parseContinueStatement = Statement(ContinueStatement, parser => {
   parser.expect('continue');
   return {
-    type: 'ContinueStatement',
-    argument: parser.expression(20)
+    label: parser.expression(20)
   };
-};
+});
 
-const parseWithStatement = parser => {
+const parseWithStatement = Statement(WithStatement, parser => {
   parser.expect('with');
   parser.expect('(');
   const object = parser.expression();
   parser.expect(')');
   return {
-    type: 'WithStatement',
     object,
     body: parseStatement(parser)
   };
-};
+});
 
-const parseSwitchStatement = parser => {
+const parseSwitchStatement = Statement(SwitchStatement, parser => {
   parser.expect('switch');
   parser.expect('(');
   const discriminant = parser.expression();
@@ -939,11 +1140,10 @@ const parseSwitchStatement = parser => {
   const cases = parseSwitchCases(parser);
   parser.expect('}');
   return {
-    type: 'SwitchStatement',
     discriminant,
     cases
   };
-};
+});
 
 const parseSwitchCases = (parser, cases = []) => {
   const {value: nextToken} = parser.lookAhead();
@@ -966,18 +1166,16 @@ const parseSwitchCase = (parser, nextToken) => {
   return node;
 };
 
-const parseThrowStatement = parser => {
+const parseThrowStatement = Statement(ThrowStatement, parser => {
   parser.expect('throw');
-  const node = {
-    type: 'ThrowStatement',
-    expression: parser.expression()
+  return {
+    argument: parser.expression()
   };
-  return node;
-};
+});
 
-const parseTryStatement = parser => {
+const parseTryStatement = Statement(TryStatement, parser => {
   parser.expect('try');
-  const node = {type: 'TryStatement', block: parseBlockStatement(parser), handler: null, finalizer: null};
+  const node = {block: parseBlockStatement(parser), handler: null, finalizer: null};
   if (parser.eventually('catch')) {
     const handler = {type: 'CatchClause'};
     parser.expect('(');
@@ -990,24 +1188,22 @@ const parseTryStatement = parser => {
     node.finalizer = parseBlockStatement(parser);
   }
   return node;
-};
+});
 
-const parseWhileStatement = parser => {
+const parseWhileStatement = Statement(WhileStatement, parser => {
   parser.expect('while');
   parser.expect('(');
   const node = {
-    type: 'WhileStatement',
     test: parser.expression()
   };
   parser.expect(')');
   node.body = parseStatement(parser);
   return node;
-};
+});
 
-const parseDoWhileStatement = parser => {
+const parseDoWhileStatement = Statement(DoWhileStatement, parser => {
   parser.expect('do');
   const node = {
-    type: 'DoWhileStatement',
     body: parseStatement(parser)
   };
   parser.expect('while');
@@ -1015,7 +1211,7 @@ const parseDoWhileStatement = parser => {
   node.test = parser.expression();
   parser.expect(')');
   return node;
-};
+});
 
 //todo
 const parseBindingIdentifierOrPattern = parser => {
@@ -1050,14 +1246,13 @@ const parseVariableDeclarators = (parser, declarators = []) => {
   return parseVariableDeclarators(parser, declarators);
 };
 
-const parseVariableStatement = parser => {
+const parseVariableDeclaration = Statement(VariableDeclaration, parser => {
   parser.expect('var');
   return {
-    type: 'VariableDeclaration',
     kind: 'var',
     declarations: parseVariableDeclarators(parser)
   };
-};
+});
 
 const getForDerivation = parser => {
   const {value: nextToken} = parser.lookAhead();
@@ -1103,7 +1298,7 @@ const parseForStatement = parser => {
   const {value: token} = parser.lookAhead();
   let startExpression, node;
   if (token === parser.get('var')) {
-    startExpression = parseVariableStatement(parser);
+    startExpression = parseVariableDeclaration(parser);
   } else {
     startExpression = parser.expression(-1, [parser.get('in'), parser.get('of')]);
   }
@@ -1114,60 +1309,59 @@ const parseForStatement = parser => {
   return node;
 };
 
-const parseLabeledStatement = parser => {
+const parseLabeledStatement = Statement(LabeledStatement, parser => {
   const node = {
-    type: 'LabeledStatement',
     label: parser.expression(20)
   };
   parser.expect(':');
   node.body = parseStatement(parser);
   return node;
-};
+});
+
+//todo 1. check whether a real compose affects performances or not
+//todo 2. these could be decoratos like @Infix(ast.foo) etc or eve @Node(ast.blah)
+//compose one with arrity one
+const Prefix = (factory, fn) => parser => factory(fn(parser));
+// compose with arrity 3
+const Infix = (factory, fn) => (parser, left, operator) => factory(fn(parser, left, operator));
 
 //prefix
-const asValue = (type, key) => (parser) => {
+const asValue = (type, key) => Prefix(type, (parser) => {
   const {value: token} = parser.next();
-  const node = {type};
-  if (key) {
-    node[key] = token.value;
-  }
-  return node;
-};
-const asUnaryExpression = (type) => (parser) => {
+  return key ? {[key]: token.value} : {};
+});
+const asUnaryExpression = (type) => Prefix(type, (parser) => {
   const {value: token} = parser.next();
   return {
-    type,
     operator: token.value,
     argument: parser.expression(parser.getPrefixPrecedence(token)),
     prefix: true
   };
-};
+});
 const parseGroupExpression = (parser) => {
   parser.expect('(');
   const exp = parser.expression();
   parser.expect(')');
   return exp;
 };
-const parseUnaryExpression = asUnaryExpression('UnaryExpression', 'operator');
-const parseThisExpression = asValue('ThisExpression');
-const parseLiteralExpression = asValue('Literal', 'value');
-const parseIdentifierExpression = asValue('Identifier', 'name');
-const parseRegularExpressionLiteral = parser => {
+const parseUnaryExpression = asUnaryExpression(UnaryExpression);
+const parseThisExpression = asValue(ThisExpression);
+const parseLiteralExpression = asValue(Literal, 'value');
+const parseIdentifierExpression = asValue(Identifier, 'name');
+const parseRegularExpressionLiteral = Prefix(Literal, parser => {
   const {value: regexp} = parser.next();
   return {
-    type: 'Literal',
     value: regexp.value,
     regex: {
       pattern: regexp.value.source,
       flags: regexp.value.flags
     }
   }
-};
-const parseUpdateExpressionAsPrefix = asUnaryExpression('UpdateExpression');
-const parseFunctionExpression = (parser) => {
+});
+const parseUpdateExpressionAsPrefix = asUnaryExpression(UpdateExpression);
+const parseFunctionExpression = Prefix(FunctionExpression, (parser) => {
   parser.expect('function');
   const node = {
-    type: 'FunctionExpression',
     id: null,
     async: false,
     generator: false
@@ -1181,16 +1375,15 @@ const parseFunctionExpression = (parser) => {
   parser.expect(')');
   node.body = parseBlockStatement(parser);
   return node;
-};
-const parseNewExpression = parser => {
+});
+const parseNewExpression = Prefix(NewExpression, parser => {
   const {value: newToken} = parser.expect('new');
   const callee = parser.expression(parser.getPrefixPrecedence(newToken));
   return {
-    type: 'NewExpression',
     callee: callee.callee ? callee.callee : callee,
     arguments: callee.arguments ? callee.arguments : []
   };
-};
+});
 
 //Arrays literals
 const parseArrayElements = (parser, elements = []) => {
@@ -1206,15 +1399,14 @@ const parseArrayElements = (parser, elements = []) => {
   }
   return parseArrayElements(parser, elements);
 };
-const parseArrayLiteralExpression = (parser) => {
+const parseArrayLiteralExpression = Prefix(ArrayExpression, (parser) => {
   parser.expect('[');
   const node = {
-    type: 'ArrayExpression',
     elements: parseArrayElements(parser)
   };
   parser.expect(']');
   return node;
-};
+});
 
 const parsePropertyList = (parser, properties = []) => {
   const {value: nextToken} = parser.lookAhead();
@@ -1229,7 +1421,7 @@ const parsePropertyList = (parser, properties = []) => {
   return parsePropertyList(parser, properties);
 };
 const isPropertyName = (parser, token) => token === parser.get('[') || token.type === categories.Identifier || token.type === categories.NumericLiteral || token.type === categories.StringLiteral || token.isReserved === true;
-const parseObjectPropertyExpression = parser => {
+const parseObjectPropertyExpression = Prefix(Property, parser => {
   const {value: nextToken} = parser.lookAhead();
   let key;
   let kind = 'init';
@@ -1250,7 +1442,6 @@ const parseObjectPropertyExpression = parser => {
   }
 
   return {
-    type: 'Property',
     key,
     value,
     kind,
@@ -1258,26 +1449,24 @@ const parseObjectPropertyExpression = parser => {
     method,
     shorthand
   };
-};
-const parseObjectLiteralExpression = (parser) => {
+});
+const parseObjectLiteralExpression = Prefix(ObjectExpression, (parser) => {
   parser.expect('{');
   const node = {
-    type: 'ObjectExpression',
     properties: parsePropertyList(parser)
   };
   parser.expect('}');
   return node;
-};
+});
 
 //infix
-const asBinaryExpression = type => (parser, left, operator) => {
+const asBinaryExpression = type => Infix(type, (parser, left, operator) => {
   return {
-    type,
     left,
     right: parser.expression(parser.getInfixPrecedence(operator)),
     operator: operator.value
   };
-};
+});
 const parseArguments = (parser, expressions = []) => {
   const {value: parsableValue} = parser.lookAhead();
   const comma = parser.get(',');
@@ -1295,13 +1484,12 @@ const parseArguments = (parser, expressions = []) => {
   parser.eat();
   return parseArguments(parser, expressions);
 };
-const parseAssignmentExpression = asBinaryExpression('AssignmentExpression');
-const parseBinaryExpression = asBinaryExpression('BinaryExpression');
-const parseLogicalExpression = asBinaryExpression('LogicalExpression');
-const parseMemberAccessExpression = (parser, left, operator) => {
+const parseAssignmentExpression = asBinaryExpression(AssignmentExpression);
+const parseBinaryExpression = asBinaryExpression(BinaryExpression);
+const parseLogicalExpression = asBinaryExpression(LogicalExpression);
+const parseMemberAccessExpression = Infix(MemberExpression, (parser, left, operator) => {
   const computed = operator === parser.get('[');
   const node = {
-    type: 'MemberExpression',
     object: left,
     computed: computed,
     property: computed ? parser.expression() : parseIdentifierExpression(parser)
@@ -1310,18 +1498,15 @@ const parseMemberAccessExpression = (parser, left, operator) => {
     parser.expect(']');
   }
   return node;
-};
-const parseUpdateExpression = (parser, left, operator) => {
-  return {
-    type: 'UpdateExpression',
-    argument: left,
-    operator: operator.value,
-    prefix: false
-  };
-};
-const parseConditionalExpression = (parser, test) => {
+});
+const parseUpdateExpression = Infix(UpdateExpression, (parser, left, operator) => ({
+  type: 'UpdateExpression',
+  argument: left,
+  operator: operator.value,
+  prefix: false
+}));
+const parseConditionalExpression = Infix(ConditionalExpression, (parser, test) => {
   const node = {
-    type: 'ConditionalExpression',
     test
   };
   const commaPrecedence = parser.getInfixPrecedence(parser.get(','));
@@ -1329,18 +1514,17 @@ const parseConditionalExpression = (parser, test) => {
   parser.expect(':');
   node.alternate = parser.expression(commaPrecedence);
   return node;
-};
-const parseCallExpression = (parser, callee) => {
+});
+const parseCallExpression = Infix(CallExpression, (parser, callee) => {
   const node = {
-    type: 'CallExpression',
     callee,
     arguments: parseArguments(parser)
   };
   parser.expect(')');
   return node;
-};
+});
 
-const parseSequenceExpression = (parser, left) => {
+const parseSequenceExpression = Infix(SequenceExpression, (parser, left) => {
   let node = left;
   const comma = parser.get(',');
   const next = parser.expression(parser.getInfixPrecedence(comma));
@@ -1353,7 +1537,7 @@ const parseSequenceExpression = (parser, left) => {
     };
   }
   return node;
-};
+});
 
 const ECMAScriptTokenRegistry = () => {
   const registry = tokenRegistry();
@@ -1458,7 +1642,7 @@ const ECMAScriptTokenRegistry = () => {
   statementsMap.set(registry.get(';'),parseEmptyStatement);
   statementsMap.set(registry.get('{'),parseBlockStatement);
   statementsMap.set(registry.get('for'),parseForStatement);
-  statementsMap.set(registry.get('var'),withEventualSemiColon(parseVariableStatement));
+  statementsMap.set(registry.get('var'),withEventualSemiColon(parseVariableDeclaration));
   statementsMap.set(registry.get('function'),parseFunctionDeclaration);
   statementsMap.set(registry.get('return'),withEventualSemiColon(parseReturnStatement));
   statementsMap.set(registry.get('break'),withEventualSemiColon(parseBreakStatement));
@@ -1517,6 +1701,7 @@ const tokenStream = ({scanner: scanner$$1, tokenRegistry, filter, evaluate}) => 
     const stream = lexemes(code, scanner$$1);
     const iterator = filterMap(stream)[Symbol.iterator]();
     const buffer = [];
+    const next = () => iterator.next();
 
     return forwardArrityOne({
       [Symbol.iterator] () {
@@ -1526,7 +1711,7 @@ const tokenStream = ({scanner: scanner$$1, tokenRegistry, filter, evaluate}) => 
         if (buffer.length > offset) {
           return buffer[offset]
         }
-        buffer.push(iterator.next());
+        buffer.push(next());
         return this.lookAhead(offset);
       },
       eventually (expected) {
@@ -1545,9 +1730,7 @@ const tokenStream = ({scanner: scanner$$1, tokenRegistry, filter, evaluate}) => 
         return nextToken;
       },
       next () {
-        const nextToken = buffer.length ? buffer.shift() : iterator.next();
-        console.log(nextToken.value);
-        return nextToken;
+        return buffer.length ? buffer.shift() : next();
       },
       eat (number = 1) {
         const n = this.next();
@@ -1682,10 +1865,9 @@ const parserFactory = (tokens = defaultRegistry$1) => {
           return parseInfix(parser, left, precedence, exits);
         },
         program () {
-          return {
-            type: 'Program',
+          return Program({
             body: parseStatementList(parser)
-          };
+          });
         },
         module () {
           throw new Error('not implemented');
@@ -5507,10 +5689,311 @@ var labels = plan()
     }]);
   });
 
-//todo
 var switches = plan()
-  .test('should implement', t => {
-    t.fail();
+  .test('parse switch(foo){}', t => {
+    t.deepEqual(parse$1('switch(foo){}').body, [{
+      type: 'SwitchStatement',
+      discriminant: {type: 'Identifier', name: 'foo'},
+      cases: []
+    }]);
+  })
+  .test(`parse switch(foo){
+      case "bar":{
+        foo++ 
+        break;
+      }
+      case "blah":
+      case "woot":
+        break; 
+      default:
+        foo++;
+   }`, t => {
+    t.deepEqual(parse$1(`switch(foo){
+      case "bar":{
+        foo++ 
+        break;
+      }
+      case "blah":
+      case "woot":
+        break; 
+      default:
+        foo++;
+   }`).body, [{
+      type: 'SwitchStatement',
+      discriminant: {type: 'Identifier', name: 'foo'},
+      cases:
+        [{
+          type: 'SwitchCase',
+          test: {type: 'Literal', value: 'bar'},
+          consequent:
+            [{
+              type: 'BlockStatement',
+              body:
+                [{
+                  type: 'ExpressionStatement',
+                  expression:
+                    {
+                      type: 'UpdateExpression',
+                      argument: {type: 'Identifier', name: 'foo'},
+                      operator: '++',
+                      prefix: false
+                    }
+                },
+                  {type: 'BreakStatement', label: null}]
+            }]
+        },
+          {
+            type: 'SwitchCase',
+            test: {type: 'Literal', value: 'blah'},
+            consequent: []
+          },
+          {
+            type: 'SwitchCase',
+            test: {type: 'Literal', value: 'woot'},
+            consequent: [{type: 'BreakStatement', label: null}]
+          },
+          {
+            type: 'SwitchCase',
+            test: null,
+            consequent:
+              [{
+                type: 'ExpressionStatement',
+                expression:
+                  {
+                    type: 'UpdateExpression',
+                    argument: {type: 'Identifier', name: 'foo'},
+                    operator: '++',
+                    prefix: false
+                  }
+              }]
+          }]
+    }]);
+  });
+
+var breakStatements = plan()
+  .test('parse while(true){break ;}', t => {
+    t.deepEqual(parse$1('while(true){break ;}').body, [{
+      type: 'WhileStatement',
+      test: {type: 'Literal', value: true},
+      body:
+        {
+          type: 'BlockStatement',
+          body: [{type: 'BreakStatement', label: null}]
+        }
+    }]);
+  })
+  .test('parse while(true){break}', t => {
+    t.deepEqual(parse$1('while(true){break}').body, [{
+      type: 'WhileStatement',
+      test: {type: 'Literal', value: true},
+      body:
+        {
+          type: 'BlockStatement',
+          body: [{type: 'BreakStatement', label: null}]
+        }
+    }]);
+  })
+  .test('parse block:while(true){break block;}', t => {
+    t.deepEqual(parse$1('block:while(true){break block;}').body, [{
+      type: 'LabeledStatement',
+      label: {type: 'Identifier', name: 'block'},
+      body:
+        {
+          type: 'WhileStatement',
+          test: {type: 'Literal', value: true},
+          body:
+            {
+              type: 'BlockStatement',
+              body:
+                [{
+                  type: 'BreakStatement',
+                  label: {type: 'Identifier', name: 'block'}
+                }]
+            }
+        }
+    }]);
+  })
+  .test('parse block:while(true)break block;', t => {
+    t.deepEqual(parse$1('block:while(true)break block;').body, [{
+      type: 'LabeledStatement',
+      label: {type: 'Identifier', name: 'block'},
+      body:
+        {
+          type: 'WhileStatement',
+          test: {type: 'Literal', value: true},
+          body:
+            {
+              type: 'BreakStatement',
+              label: {type: 'Identifier', name: 'block'}
+            }
+        }
+    }]);
+  });
+
+var continueStatements = plan()
+  .test('parse while(true){continue ;}', t => {
+    t.deepEqual(parse$1('while(true){continue ;}').body, [{
+      type: 'WhileStatement',
+      test: {type: 'Literal', value: true},
+      body:
+        {
+          type: 'BlockStatement',
+          body: [{type: 'ContinueStatement', label: null}]
+        }
+    }]);
+  })
+  .test('parse while(true){continue}', t => {
+    t.deepEqual(parse$1('while(true){continue}').body, [{
+      type: 'WhileStatement',
+      test: {type: 'Literal', value: true},
+      body:
+        {
+          type: 'BlockStatement',
+          body: [{type: 'ContinueStatement', label: null}]
+        }
+    }]);
+  })
+  .test('parse block:while(true){continue block;}', t => {
+    t.deepEqual(parse$1('block:while(true){continue block;}').body, [{
+      type: 'LabeledStatement',
+      label: {type: 'Identifier', name: 'block'},
+      body:
+        {
+          type: 'WhileStatement',
+          test: {type: 'Literal', value: true},
+          body:
+            {
+              type: 'BlockStatement',
+              body:
+                [{
+                  type: 'ContinueStatement',
+                  label: {type: 'Identifier', name: 'block'}
+                }]
+            }
+        }
+    }]);
+  })
+  .test('parse block:while(true)continue block;', t => {
+    t.deepEqual(parse$1('block:while(true)continue block;').body, [{
+      type: 'LabeledStatement',
+      label: {type: 'Identifier', name: 'block'},
+      body:
+        {
+          type: 'WhileStatement',
+          test: {type: 'Literal', value: true},
+          body:
+            {
+              type: 'ContinueStatement',
+              label: {type: 'Identifier', name: 'block'}
+            }
+        }
+    }]);
+  });
+
+var withStatements = plan()
+  .test('parse with(foo)bar++;', t => {
+    t.deepEqual(parse$1('with(foo)bar++;').body, [{
+      type: 'WithStatement',
+      object: {type: 'Identifier', name: 'foo'},
+      body:
+        {
+          type: 'ExpressionStatement',
+          expression:
+            {
+              type: 'UpdateExpression',
+              argument: {type: 'Identifier', name: 'bar'},
+              operator: '++',
+              prefix: false
+            }
+        }
+    }]);
+  })
+  .test('parse with(foo.bar){test();}', t => {
+    t.deepEqual(parse$1('with(foo.bar){test();}').body, [{
+      type: 'WithStatement',
+      object:
+        {
+          type: 'MemberExpression',
+          object: {type: 'Identifier', name: 'foo'},
+          computed: false,
+          property: {type: 'Identifier', name: 'bar'}
+        },
+      body:
+        {
+          type: 'BlockStatement',
+          body:
+            [{
+              type: 'ExpressionStatement',
+              expression:
+                {
+                  type: 'CallExpression',
+                  callee: {type: 'Identifier', name: 'test'},
+                  arguments: []
+                }
+            }]
+        }
+    }]);
+  });
+
+var throwStatements = plan()
+  .test('parse throw new Error("foo")', t => {
+    t.deepEqual(parse$1('throw new Error("foo")').body, [{
+      type: 'ThrowStatement',
+      argument:
+        {
+          type: 'NewExpression',
+          callee: {type: 'Identifier', name: 'Error'},
+          arguments: [{type: 'Literal', value: 'foo'}]
+        }
+    }]);
+  })
+  .test('parse throw foo;', t => {
+    t.deepEqual(parse$1('throw foo;').body, [{
+      type: 'ThrowStatement',
+      argument: {type: 'Identifier', name: 'foo'}
+    }]);
+  })
+  .test('parse throw null', t => {
+    t.deepEqual(parse$1('throw null').body, [{
+      type: 'ThrowStatement',
+      argument: {type: 'Literal', value: null}
+    }]);
+  });
+
+var tryCatch = plan()
+  .test('parse try {} catch(e){}', t => {
+    t.deepEqual(parse$1('try {} catch(e){}').body, [{
+      type: 'TryStatement',
+      block: {type: 'BlockStatement', body: []},
+      handler:
+        {
+          type: 'CatchClause',
+          param: {type: 'Identifier', name: 'e'},
+          body: {type: 'BlockStatement', body: []}
+        },
+      finalizer: null
+    }]);
+  })
+  .test('parse try {} catch(e) {} finally {}', t => {
+    t.deepEqual(parse$1('try {} catch(e) {} finally {}').body, [{
+      type: 'TryStatement',
+      block: {type: 'BlockStatement', body: []},
+      handler:
+        {
+          type: 'CatchClause',
+          param: {type: 'Identifier', name: 'e'},
+          body: {type: 'BlockStatement', body: []}
+        },
+      finalizer: {type: 'BlockStatement', body: []}
+    }]);
+  })
+  .test('parse try {} finally {}', t => {
+    t.deepEqual(parse$1('try {} finally {}').body, [{
+      type: 'TryStatement',
+      block: {type: 'BlockStatement', body: []},
+      handler: null,
+      finalizer: {type: 'BlockStatement', body: []}
+    }]);
   });
 
 var statements = plan()
@@ -5525,7 +6008,12 @@ var statements = plan()
   .test(functions$1)
   .test(switches)
   .test(labels)
-  .test(doWhile);
+  .test(doWhile)
+  .test(breakStatements)
+  .test(continueStatements)
+  .test(withStatements)
+  .test(throwStatements)
+  .test(tryCatch);
 
 plan()
   .test(tokens)
