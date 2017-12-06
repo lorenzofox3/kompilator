@@ -3,6 +3,7 @@ import {
   puncutators
 } from "./tokens";
 import * as chars from "./chars";
+import {syntacticFlags} from "./utils";
 
 const lexemeFromRegExp = (regExp, category) => sourceStream => ({type: category, rawValue: sourceStream.match(regExp)});
 const testFromRegExp = regExp => sourceStream => sourceStream.test(regExp);
@@ -138,9 +139,16 @@ export const punctuators = (punctuatorList = puncutators) => {
     rawValue: (sourceStream.nextSubStr(3) === chars.SPREAD) ? sourceStream.read(3) : sourceStream.read(1)
   });
   return {
-    test (sourceStream, allowRegexp) {
+    test (sourceStream, context) {
       const next = sourceStream.seeNextAt();
-      return (next === chars.CHAR_SLASH && allowRegexp === false) || sizeOnePunctuatorList.includes(next);
+      switch (next) {
+        case chars.CHAR_SLASH:
+          return ~context & syntacticFlags.allowRegexp;
+        case chars.CHAR_BRACE_CLOSE:
+          return context & syntacticFlags.allowRightBrace;
+        default:
+          return sizeOnePunctuatorList.includes(next);
+      }
     },
     lexeme: sourceStream => sourceStream.seeNextAt() === chars.CHAR_DOT ? lexemeFromDot(sourceStream) : lexeme(sourceStream)
   };
@@ -187,9 +195,9 @@ const scanRegExpFlags = (sourceStream, count) => {
 
 export const regularExpression = () => {
   return {
-    test (sourceStream, allowRegexp) {
+    test (sourceStream, context) {
       const next = sourceStream.seeNextAt();
-      return allowRegexp && next === chars.CHAR_SLASH;
+      return (context & syntacticFlags.allowRegexp) && next === chars.CHAR_SLASH;
     },
     lexeme (sourceStream) {
       const body = scanRegExpBody(sourceStream);
@@ -205,21 +213,76 @@ export const regularExpression = () => {
   };
 };
 
+const templateOrPart = (onExit = categories.Template, onFollow = categories.TemplateHead) => {
+  const fn = (sourceStream, count = 1) => {
+    const next = sourceStream.seeNextAt(count);
+    count += 1;
+    if (next === chars.CHAR_TEMPLATE_QUOTE) {
+      return {
+        type: onExit,
+        rawValue: sourceStream.read(count)
+      };
+    }
+
+    if (next === chars.CHAR_DOLLAR && sourceStream.seeNextAt(count) === chars.CHAR_BRACE_OPEN) {
+      return {
+        type: onFollow,
+        rawValue: sourceStream.read(count + 1)
+      };
+    }
+
+    if (next === chars.CHAR_BACKSLASH) {
+      count += 1;
+    }
+
+    return fn(sourceStream, count);
+
+  };
+  return fn;
+};
+const headOrTemplate = templateOrPart();
+export const templateHeadOrLiteral = () => {
+  return {
+    test (sourceStream) {
+      const next = sourceStream.seeNextAt();
+      return next === chars.CHAR_TEMPLATE_QUOTE;
+    },
+    lexeme (sourceStream) {
+      return headOrTemplate(sourceStream);
+    }
+  };
+};
+
+const middleOrTail = templateOrPart(categories.TemplateTail, categories.TemplateMiddle);
+export const templateTailOrMiddle = () => {
+  return {
+    test (sourceStream, context) {
+      const next = sourceStream.seeNextAt();
+      return next === chars.CHAR_BRACE_CLOSE && (~context & syntacticFlags.allowRightBrace);
+    },
+    lexeme (sourceStream) {
+      return middleOrTail(sourceStream);
+    }
+  }
+};
+
 export const ECMAScriptLexicalGrammar = [
   whiteSpace,
   lineTerminator,
   numbers,
   singleLineComment,
   multiLineComment,
-  regularExpression,
   punctuators,
   identifiers,
-  stringLiteral
+  regularExpression,
+  stringLiteral,
+  templateHeadOrLiteral,
+  templateTailOrMiddle
 ];
 
 export const scanner = (lexicalRules = ECMAScriptLexicalGrammar.map(g => g())) => {
-  return (source, isRegexpAllowed) => {
-    const rule = lexicalRules.find(lr => lr.test(source, isRegexpAllowed));
+  return (source, context) => {
+    const rule = lexicalRules.find(lr => lr.test(source, context));
     if (rule === void 0) {
       throw new Error(`could not understand the symbol ${source.seeNextAt()}`);
     }

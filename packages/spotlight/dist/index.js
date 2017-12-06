@@ -14,7 +14,7 @@ const sourceStream = (code) => {
   const test = (regexp) => nextStretch().search(regexp) === 0;
   const nextSubStr = (count = 1) => code.substr(index, count);
   const seeNextAt = (offset = 0) => code[index + offset];
-  const nextStretch = () => nextSubStr(3); //we need three chars to be really sure of the current lexical production
+  const nextStretch = () => nextSubStr(3); //we need three chars to be really sure of the current lexical production (0x3...)
   const loc = () => ({col, line});
 
   const advance = (number = 1) => {
@@ -95,18 +95,17 @@ const puncutators = `{ ( ) [ ] . ... ; , < > <= >= == != === !== + - * % ** ++ -
 const allowRegexpAfter = 'case delete do else in instanceof new return throw typeof void { ( [ . ; , < > <= >= == != === !== + - * << >> >>> & | ^ ! ~ && || ? : = += -= *= %= <<= >>= >>>= &= |= ^= /='.split(' ');
 
 const createLanguageToken = (symbol, value) => {
-  const token = Object.create(null, {
+  return Object.freeze(Object.assign(Object.create(null, {
     type: {
       get () {
         return this; //type is an alias to itself (so we can use in Maps as we would to for other categories such literals, etc)
       }
-    },
-    value: {value: value !== void 0 ? value : symbol},
-    rawValue: {value: symbol, enumerable: true},
-    isReserved: {value: reservedKeywords.includes(symbol), enumerable: true}
-  });
-
-  return Object.freeze(token);
+    }
+  }), {
+    value: value !== void  0 ? value : symbol,
+    rawValue: symbol,
+    isReserved: reservedKeywords.includes(symbol)
+  }));
 };
 
 //create a token table
@@ -129,14 +128,15 @@ const tokenRegistry = () => {
         switch (lexeme.type) {
           case categories.StringLiteral:
             return Object.assign(lexeme, {
-              value: lexeme.rawValue.substr(1, lexeme.rawValue.length - 2)
+              value: lexeme.rawValue.substr(1, lexeme.rawValue.length - 2),
+              isReserved: false
             });
           case categories.NumericLiteral:
-            return Object.assign(lexeme, {value: Number(lexeme.rawValue)});
+            return Object.assign(lexeme, {value: Number(lexeme.rawValue), isReserved: false});
           case categories.RegularExpressionLiteral:
-            return Object.assign(lexeme, {value: new RegExp(lexeme.pattern, lexeme.flags)});
+            return Object.assign(lexeme, {isReserved: false, value: new RegExp(lexeme.pattern, lexeme.flags)});
           default:
-            return Object.assign(lexeme, {value: lexeme.rawValue});
+            return Object.assign(lexeme, {isReserved: false, value: lexeme.rawValue});
         }
       }
       return tokenMap.get(lexeme.rawValue);
@@ -163,6 +163,11 @@ const lazyFilterWith = fn => function* (iterator) {
   }
 };
 
+const syntacticFlags = {
+  allowRegexp: 1 << 0,
+  allowRightBrace: 1 << 1
+};
+
 const CHAR_STAR = '*';
 const CHAR_SLASH = '/';
 const MULTI_LINE_COMMENT_START = '/*';
@@ -174,6 +179,10 @@ const CHAR_LEFT_BRACKET = '[';
 const CHAR_RIGHT_BRACKET = ']';
 const CHAR_DOT = '.';
 const SPREAD = '...';
+const CHAR_TEMPLATE_QUOTE = '`';
+const CHAR_DOLLAR = '$';
+const CHAR_BRACE_OPEN = '{';
+const CHAR_BRACE_CLOSE = '}';
 
 const lexemeFromRegExp = (regExp, category) => sourceStream => ({type: category, rawValue: sourceStream.match(regExp)});
 const testFromRegExp = regExp => sourceStream => sourceStream.test(regExp);
@@ -309,9 +318,16 @@ const punctuators = (punctuatorList = puncutators) => {
     rawValue: (sourceStream.nextSubStr(3) === SPREAD) ? sourceStream.read(3) : sourceStream.read(1)
   });
   return {
-    test (sourceStream, allowRegexp) {
+    test (sourceStream, context) {
       const next = sourceStream.seeNextAt();
-      return (next === CHAR_SLASH && allowRegexp === false) || sizeOnePunctuatorList.includes(next);
+      switch (next) {
+        case CHAR_SLASH:
+          return ~context & syntacticFlags.allowRegexp;
+        case CHAR_BRACE_CLOSE:
+          return context & syntacticFlags.allowRightBrace;
+        default:
+          return sizeOnePunctuatorList.includes(next);
+      }
     },
     lexeme: sourceStream => sourceStream.seeNextAt() === CHAR_DOT ? lexemeFromDot(sourceStream) : lexeme(sourceStream)
   };
@@ -358,9 +374,9 @@ const scanRegExpFlags = (sourceStream, count) => {
 
 const regularExpression = () => {
   return {
-    test (sourceStream, allowRegexp) {
+    test (sourceStream, context) {
       const next = sourceStream.seeNextAt();
-      return allowRegexp && next === CHAR_SLASH;
+      return (context & syntacticFlags.allowRegexp) && next === CHAR_SLASH;
     },
     lexeme (sourceStream) {
       const body = scanRegExpBody(sourceStream);
@@ -376,21 +392,76 @@ const regularExpression = () => {
   };
 };
 
+const templateOrPart = (onExit = categories.Template, onFollow = categories.TemplateHead) => {
+  const fn = (sourceStream, count = 1) => {
+    const next = sourceStream.seeNextAt(count);
+    count += 1;
+    if (next === CHAR_TEMPLATE_QUOTE) {
+      return {
+        type: onExit,
+        rawValue: sourceStream.read(count)
+      };
+    }
+
+    if (next === CHAR_DOLLAR && sourceStream.seeNextAt(count) === CHAR_BRACE_OPEN) {
+      return {
+        type: onFollow,
+        rawValue: sourceStream.read(count + 1)
+      };
+    }
+
+    if (next === CHAR_BACKSLASH) {
+      count += 1;
+    }
+
+    return fn(sourceStream, count);
+
+  };
+  return fn;
+};
+const headOrTemplate = templateOrPart();
+const templateHeadOrLiteral = () => {
+  return {
+    test (sourceStream) {
+      const next = sourceStream.seeNextAt();
+      return next === CHAR_TEMPLATE_QUOTE;
+    },
+    lexeme (sourceStream) {
+      return headOrTemplate(sourceStream);
+    }
+  };
+};
+
+const middleOrTail = templateOrPart(categories.TemplateTail, categories.TemplateMiddle);
+const templateTailOrMiddle = () => {
+  return {
+    test (sourceStream, context) {
+      const next = sourceStream.seeNextAt();
+      return next === CHAR_BRACE_CLOSE && (~context & syntacticFlags.allowRightBrace);
+    },
+    lexeme (sourceStream) {
+      return middleOrTail(sourceStream);
+    }
+  }
+};
+
 const ECMAScriptLexicalGrammar = [
   whiteSpace,
   lineTerminator,
   numbers,
   singleLineComment,
   multiLineComment,
-  regularExpression,
   punctuators,
   identifiers,
-  stringLiteral
+  regularExpression,
+  stringLiteral,
+  templateHeadOrLiteral,
+  templateTailOrMiddle
 ];
 
 const scanner = (lexicalRules = ECMAScriptLexicalGrammar.map(g => g())) => {
-  return (source, isRegexpAllowed) => {
-    const rule = lexicalRules.find(lr => lr.test(source, isRegexpAllowed));
+  return (source, context) => {
+    const rule = lexicalRules.find(lr => lr.test(source, context));
     if (rule === void 0) {
       throw new Error(`could not understand the symbol ${source.seeNextAt()}`);
     }
@@ -418,7 +489,7 @@ todo: later we can give ability to the consumer to configure the scanner to perf
 //return an iterable sequence of lexemes (note it can only be consumed once like a generator)
 //The consumer (like a parser) will have to handle the syntactic state and the token evaluation by itself
 const lexemes = (code, scanner$$1) => {
-  let isRegexpAllowed = true;
+  let context = syntacticFlags.allowRegexp | syntacticFlags.allowRightBrace;
   const source = sourceStream(code);
   return {
     * [Symbol.iterator] () {
@@ -426,14 +497,20 @@ const lexemes = (code, scanner$$1) => {
         if (source.done === true) {
           return;
         }
-        yield scanner$$1(source, isRegexpAllowed);
+        yield scanner$$1(source, context);
       }
     },
     allowRegexp () {
-      isRegexpAllowed = true;
+      context |= syntacticFlags.allowRegexp;
     },
     disallowRegexp () {
-      isRegexpAllowed = false;
+      context &= ~syntacticFlags.allowRegexp;
+    },
+    allowRightBrace () { // as punctuator vs template middle/tail
+      context |= syntacticFlags.allowRightBrace;
+    },
+    disallowRightBrace () {
+      context &= ~syntacticFlags.allowRightBrace;
     },
     loc () {
       return source.loc();
@@ -457,13 +534,45 @@ const tokenize = function* (code, {scanner: scanner$$1 = defaultScanner, tokenRe
   const filterMap = iter => mapFunc(filterFunc(iter));
   const stream = lexemes(code, scanner$$1);
 
+  let substitutionStack = []; //pending braces
+
   for (let t of filterMap(stream)) {
     yield t;
+    //meaningful tokens
     if (Object.is(t.type, t) || t.type >= 4) {
+
+      //heuristic for regexp context
       if (allowRegexpAfter.includes(t.rawValue)) {
         stream.allowRegexp();
       } else {
         stream.disallowRegexp();
+      }
+
+      //template literal substitution
+      if (t.type === categories.TemplateHead || t.type === categories.TemplateMiddle) {
+        substitutionStack.push(0);
+        stream.disallowRightBrace();
+        stream.allowRegexp();
+      } else if (t.type === categories.TemplateTail) {
+        substitutionStack.pop();
+      }
+
+      //without context we need to backtrack braces
+      if (substitutionStack.length) {
+
+        const lastSubstitutionIndex = substitutionStack.length - 1;
+
+        if (t.rawValue === '{') {
+          substitutionStack[lastSubstitutionIndex] = substitutionStack[lastSubstitutionIndex] + 1;
+          stream.allowRightBrace();
+        }
+
+        if (t.rawValue === '}') {
+          let pending = substitutionStack[lastSubstitutionIndex] = substitutionStack[lastSubstitutionIndex] - 1;
+          if (pending === 0) {
+            stream.disallowRightBrace();
+          }
+        }
       }
     }
   }

@@ -12,8 +12,8 @@ import call from './call';
 import news from './new';
 import precedences from './precedences';
 import sequence from './sequence';
-import object from './object';
-import array from './array';
+import object from './objectLiterals';
+import array from './arrayLiterals';
 import functions from './function';
 
 export default zora()

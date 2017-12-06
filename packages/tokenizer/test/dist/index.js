@@ -413,18 +413,17 @@ const puncutators = `{ ( ) [ ] . ... ; , < > <= >= == != === !== + - * % ** ++ -
 const allowRegexpAfter = 'case delete do else in instanceof new return throw typeof void { ( [ . ; , < > <= >= == != === !== + - * << >> >>> & | ^ ! ~ && || ? : = += -= *= %= <<= >>= >>>= &= |= ^= /='.split(' ');
 
 const createLanguageToken = (symbol, value) => {
-  const token = Object.create(null, {
+  return Object.freeze(Object.assign(Object.create(null, {
     type: {
       get () {
         return this; //type is an alias to itself (so we can use in Maps as we would to for other categories such literals, etc)
       }
-    },
-    value: {value: value !== void 0 ? value : symbol},
-    rawValue: {value: symbol, enumerable: true},
-    isReserved: {value: reservedKeywords.includes(symbol), enumerable: true}
-  });
-
-  return Object.freeze(token);
+    }
+  }), {
+    value: value !== void  0 ? value : symbol,
+    rawValue: symbol,
+    isReserved: reservedKeywords.includes(symbol)
+  }));
 };
 
 //create a token table
@@ -447,14 +446,15 @@ const tokenRegistry = () => {
         switch (lexeme.type) {
           case categories.StringLiteral:
             return Object.assign(lexeme, {
-              value: lexeme.rawValue.substr(1, lexeme.rawValue.length - 2)
+              value: lexeme.rawValue.substr(1, lexeme.rawValue.length - 2),
+              isReserved: false
             });
           case categories.NumericLiteral:
-            return Object.assign(lexeme, {value: Number(lexeme.rawValue)});
+            return Object.assign(lexeme, {value: Number(lexeme.rawValue), isReserved: false});
           case categories.RegularExpressionLiteral:
-            return Object.assign(lexeme, {value: new RegExp(lexeme.pattern, lexeme.flags)});
+            return Object.assign(lexeme, {isReserved: false, value: new RegExp(lexeme.pattern, lexeme.flags)});
           default:
-            return Object.assign(lexeme, {value: lexeme.rawValue});
+            return Object.assign(lexeme, {isReserved: false, value: lexeme.rawValue});
         }
       }
       return tokenMap.get(lexeme.rawValue);
@@ -465,20 +465,39 @@ const tokenRegistry = () => {
   }
 };
 
-tokenRegistry();
+var defaultRegistry = tokenRegistry();
 
+//todo put track loc as an option ?
 const sourceStream = (code) => {
+  const lineTerminatorRegexp = /[\u000a\u000d\u2028\u2029]/g;
   let index = 0;
-  const advance = (number = 1) => {
-    index += number;
-  };
+  let col = 0;
+  let line = 1;
 
   const test = (regexp) => nextStretch().search(regexp) === 0;
   const nextSubStr = (count = 1) => code.substr(index, count);
   const seeNextAt = (offset = 0) => code[index + offset];
-  const nextStretch = () => nextSubStr(3); //we need three chars to be really sure of the current lexical production
+  const nextStretch = () => nextSubStr(3); //we need three chars to be really sure of the current lexical production (0x3...)
+  const loc = () => ({col, line});
+
+  const advance = (number = 1) => {
+    let lastLineIndex = 0;
+    // console.log(`col: ${col}`);
+    // console.log(`line: ${line}`);
+    const stretch = nextSubStr(number);
+    // console.log(`symbols: ${stretch}`);
+    // console.log('-------')
+    while (lineTerminatorRegexp.test(stretch)) {
+      line += 1;
+      col = 0;
+      lastLineIndex = lineTerminatorRegexp.lastIndex;
+    }
+    col += (number - lastLineIndex);
+    index += number;
+  };
 
   const stream = {
+    loc,
     test,
     nextSubStr,
     seeNextAt,
@@ -522,6 +541,29 @@ const CHAR_LEFT_BRACKET = '[';
 const CHAR_RIGHT_BRACKET = ']';
 const CHAR_DOT = '.';
 const SPREAD = '...';
+const CHAR_TEMPLATE_QUOTE = '`';
+const CHAR_DOLLAR = '$';
+const CHAR_BRACE_OPEN = '{';
+const CHAR_BRACE_CLOSE = '}';
+
+const lazyMapWith = (fn) => function* (iterator) {
+  for (let i of iterator) {
+    yield fn(i);
+  }
+};
+
+const lazyFilterWith = fn => function* (iterator) {
+  for (let i of iterator) {
+    if (fn(i)) {
+      yield i;
+    }
+  }
+};
+
+const syntacticFlags = {
+  allowRegexp: 1 << 0,
+  allowRightBrace: 1 << 1
+};
 
 const lexemeFromRegExp = (regExp, category) => sourceStream => ({type: category, rawValue: sourceStream.match(regExp)});
 const testFromRegExp = regExp => sourceStream => sourceStream.test(regExp);
@@ -657,9 +699,16 @@ const punctuators = (punctuatorList = puncutators) => {
     rawValue: (sourceStream.nextSubStr(3) === SPREAD) ? sourceStream.read(3) : sourceStream.read(1)
   });
   return {
-    test (sourceStream, allowRegexp) {
+    test (sourceStream, context) {
       const next = sourceStream.seeNextAt();
-      return (next === CHAR_SLASH && allowRegexp === false) || sizeOnePunctuatorList.includes(next);
+      switch (next) {
+        case CHAR_SLASH:
+          return ~context & syntacticFlags.allowRegexp;
+        case CHAR_BRACE_CLOSE:
+          return context & syntacticFlags.allowRightBrace;
+        default:
+          return sizeOnePunctuatorList.includes(next);
+      }
     },
     lexeme: sourceStream => sourceStream.seeNextAt() === CHAR_DOT ? lexemeFromDot(sourceStream) : lexeme(sourceStream)
   };
@@ -706,9 +755,9 @@ const scanRegExpFlags = (sourceStream, count) => {
 
 const regularExpression = () => {
   return {
-    test (sourceStream, allowRegexp) {
+    test (sourceStream, context) {
       const next = sourceStream.seeNextAt();
-      return allowRegexp && next === CHAR_SLASH;
+      return (context & syntacticFlags.allowRegexp) && next === CHAR_SLASH;
     },
     lexeme (sourceStream) {
       const body = scanRegExpBody(sourceStream);
@@ -724,21 +773,76 @@ const regularExpression = () => {
   };
 };
 
+const templateOrPart = (onExit = categories.Template, onFollow = categories.TemplateHead) => {
+  const fn = (sourceStream, count = 1) => {
+    const next = sourceStream.seeNextAt(count);
+    count += 1;
+    if (next === CHAR_TEMPLATE_QUOTE) {
+      return {
+        type: onExit,
+        rawValue: sourceStream.read(count)
+      };
+    }
+
+    if (next === CHAR_DOLLAR && sourceStream.seeNextAt(count) === CHAR_BRACE_OPEN) {
+      return {
+        type: onFollow,
+        rawValue: sourceStream.read(count + 1)
+      };
+    }
+
+    if (next === CHAR_BACKSLASH) {
+      count += 1;
+    }
+
+    return fn(sourceStream, count);
+
+  };
+  return fn;
+};
+const headOrTemplate = templateOrPart();
+const templateHeadOrLiteral = () => {
+  return {
+    test (sourceStream) {
+      const next = sourceStream.seeNextAt();
+      return next === CHAR_TEMPLATE_QUOTE;
+    },
+    lexeme (sourceStream) {
+      return headOrTemplate(sourceStream);
+    }
+  };
+};
+
+const middleOrTail = templateOrPart(categories.TemplateTail, categories.TemplateMiddle);
+const templateTailOrMiddle = () => {
+  return {
+    test (sourceStream, context) {
+      const next = sourceStream.seeNextAt();
+      return next === CHAR_BRACE_CLOSE && (~context & syntacticFlags.allowRightBrace);
+    },
+    lexeme (sourceStream) {
+      return middleOrTail(sourceStream);
+    }
+  }
+};
+
 const ECMAScriptLexicalGrammar = [
   whiteSpace,
   lineTerminator,
   numbers,
   singleLineComment$1,
   multiLineComment$1,
-  regularExpression,
   punctuators,
   identifiers,
-  stringLiteral
+  regularExpression,
+  stringLiteral,
+  templateHeadOrLiteral,
+  templateTailOrMiddle
 ];
 
 const scanner = (lexicalRules = ECMAScriptLexicalGrammar.map(g => g())) => {
-  return (source, isRegexpAllowed) => {
-    const rule = lexicalRules.find(lr => lr.test(source, isRegexpAllowed));
+  return (source, context) => {
+    const rule = lexicalRules.find(lr => lr.test(source, context));
     if (rule === void 0) {
       throw new Error(`could not understand the symbol ${source.seeNextAt()}`);
     }
@@ -746,7 +850,7 @@ const scanner = (lexicalRules = ECMAScriptLexicalGrammar.map(g => g())) => {
   };
 };
 
-var scanner$1 = scanner();
+var defaultScanner = scanner();
 
 const p = plan();
 
@@ -961,70 +1065,279 @@ for (let t of passingTests$6) {
 const p$8 = plan();
 
 p$8.test('scanner should detect a white space', assert => {
-  const {type} = scanner$1(sourceStream(' '));
+  const {type} = defaultScanner(sourceStream(' '));
   assert.equal(type, categories.WhiteSpace, 'should have set the type to whitespace');
 });
 
 p$8.test('scanner should detect single line comment', assert => {
-  const {type} = scanner$1(sourceStream(`// foo bar`), false);
+  const {type} = defaultScanner(sourceStream(`// foo bar`), ~syntacticFlags.allowRegexp);
   assert.equal(type, categories.SingleLineComment, 'should have set the type to single line comment');
 });
 
 p$8.test('scanner should detect multi line comment', assert => {
-  const {type} = scanner$1(sourceStream('/* foo bar */'), false);
+  const {type} = defaultScanner(sourceStream('/* foo bar */'), ~syntacticFlags.allowRegexp);
   assert.equal(type, categories.MultiLineComment, 'should have set the type to multi line comment');
 });
 
 p$8.test('scanner should detect with context a regexp literal', assert => {
-  const {type} = scanner$1(sourceStream('/test/ig'), true);
+  const {type} = defaultScanner(sourceStream('/test/ig'), syntacticFlags.allowRegexp);
   assert.equal(type, categories.RegularExpressionLiteral, 'should have set the type to regexp literal');
 });
 
 p$8.test('scanner should detect a division operator if context does not fit regexp literal goal', assert => {
-  const {type} = scanner$1(sourceStream('/test/ig'), false);
+  const {type} = defaultScanner(sourceStream('/test/ig'), ~syntacticFlags.allowRegexp);
   assert.equal(type, categories.Punctuator, 'should have set the type to punctuator');
 });
 
 p$8.test('scanner should detect a numeric starting by a dot', assert => {
-  const {type} = scanner$1(sourceStream('.34'), false);
+  const {type} = defaultScanner(sourceStream('.34'), ~syntacticFlags.allowRegexp);
   assert.equal(type, categories.NumericLiteral, 'should have set the type to Numeric literal');
 });
 
 p$8.test('scanner should detect a period punctuator if not followed by numbers', assert => {
-  const {type} = scanner$1(sourceStream(`.dfo`), false);
+  const {type} = defaultScanner(sourceStream(`.dfo`), ~syntacticFlags.allowRegexp);
   assert.equal(type, categories.Punctuator, 'should have set the type to punctuator literal');
 });
 
 p$8.test('scanner should detect punctuator', assert => {
-  const {type} = scanner$1(sourceStream('<='), false);
+  const {type} = defaultScanner(sourceStream('<='), ~syntacticFlags.allowRegexp);
   assert.equal(type, categories.Punctuator, 'should have set the type to punctuator');
 });
 
 p$8.test('scanner should detect identifier', assert => {
-  const {type} = scanner$1(sourceStream('foo'), false);
+  const {type} = defaultScanner(sourceStream('foo'), ~syntacticFlags.allowRegexp);
   assert.equal(type, categories.Identifier, 'should have set the type to Identifier');
 });
 
 p$8.test('scanner should detect line Terminator', assert => {
-  const {type} = scanner$1(sourceStream(`
+  const {type} = defaultScanner(sourceStream(`
   `), false);
   assert.equal(type, categories.LineTerminator, 'should have set the type to Line terminator');
 });
 
 p$8.test('scanner should detect numeric literal', assert => {
-  const {type} = scanner$1(sourceStream(`34.5`), false);
+  const {type} = defaultScanner(sourceStream(`34.5`), ~syntacticFlags.allowRegexp);
   assert.equal(type, categories.NumericLiteral, 'should have set the type to Numeric literal');
 });
 
 p$8.test('scanner should detect a string literal starting with single quote', assert => {
-  const {type} = scanner$1(sourceStream(`'test'`), false);
+  const {type} = defaultScanner(sourceStream(`'test'`), ~syntacticFlags.allowRegexp);
   assert.equal(type, categories.StringLiteral, 'should have set the type to String literal');
 });
 
 p$8.test('scanner should detect a string literal starting with double quote', assert => {
-  const {type} = scanner$1(sourceStream(`"test"`), false);
+  const {type} = defaultScanner(sourceStream(`"test"`), ~syntacticFlags.allowRegexp);
   assert.equal(type, categories.StringLiteral, 'should have set the type to String literal');
 });
+
+p$8.test('scanner should detect a template literal', assert => {
+  const {type} = defaultScanner(sourceStream("`foo bar`"), ~syntacticFlags.allowRegexp);
+  assert.equal(type, categories.Template, 'should have set the type to Template literal');
+});
+
+const p$9 = plan();
+
+const passingTests$7 = [
+  '`foo bar`',
+  '`fo"o" bar`',
+  '`fo\\`o bar`',
+  '`fo\\`o bar \n foo bar bis \n another line`',
+];
+
+for (let t of passingTests$7) {
+  p$9.test(`"${t}" should result in a template literal token `, (assert) => {
+    try {
+      const {type, rawValue} = templateHeadOrLiteral().lexeme(sourceStream(t));
+      assert.equal(type, categories.Template, `"${t}" should have the string literal token type`);
+      assert.equal(rawValue, t, `should match the input`);
+    } catch (e) {
+      console.log(e);
+      assert.fail();
+    }
+  });
+}
+
+/* Note
+
+we could greatly improve perf by directly yielding filtered (and evaluated token?) at the scanner level instead of passing every lexeme through a lazy stream combinators pipe chain,
+however we would lost the great flexibility we have here !
+
+for example if we simply ignored white space, line terminators, etc.
+our filter combinator would have to run much less (at least for big files)
+
+bottom line: we value more modularity and flexibility of the system over performance
+
+todo: later we can give ability to the consumer to configure the scanner to perform better
+
+*/
+
+
+//return an iterable sequence of lexemes (note it can only be consumed once like a generator)
+//The consumer (like a parser) will have to handle the syntactic state and the token evaluation by itself
+const lexemes = (code, scanner$$1) => {
+  let context = syntacticFlags.allowRegexp | syntacticFlags.allowRightBrace;
+  const source = sourceStream(code);
+  const holdContext = fn => _ => {
+    fn();
+  };
+  return {
+    * [Symbol.iterator] () {
+      while (true) {
+        if (source.done === true) {
+          return;
+        }
+        yield scanner$$1(source, context);
+      }
+    },
+    allowRegexp: holdContext(() => {
+      context |= syntacticFlags.allowRegexp;
+    }),
+    disallowRegexp: holdContext(() => {
+      context &= ~syntacticFlags.allowRegexp;
+    }),
+    allowRightBrace: holdContext(() => { // as punctuator vs template middle/tail
+      context |= syntacticFlags.allowRightBrace;
+    }),
+    disallowRightBrace: holdContext(() => {
+      context &= ~syntacticFlags.allowRightBrace;
+    }),
+    loc () {
+      return source.loc();
+    }
+  }
+};
+
+let defaultFilter = t => t.type >= 4;
+const defaultOptions = {
+  scanner: defaultScanner,
+  tokenRegistry: defaultRegistry,
+  evaluate: defaultRegistry.evaluate,
+  filter: defaultFilter
+};
+
+// a standalone tokenizer (ie uses some heuristics based on the last meaningful token to know how to scan a slash)
+// https://stackoverflow.com/questions/5519596/when-parsing-javascript-what-determines-the-meaning-of-a-slash
+const tokenize = function* (code, {scanner: scanner$$1 = defaultScanner, tokenRegistry: tokenRegistry$$1 = defaultRegistry, filter, evaluate} = defaultOptions) {
+  const filterFunc = lazyFilterWith(filter || defaultFilter);
+  const mapFunc = lazyMapWith(evaluate || tokenRegistry$$1.evaluate);
+  const filterMap = iter => mapFunc(filterFunc(iter));
+  const stream = lexemes(code, scanner$$1);
+
+  let substitutionStack = []; //pending braces
+
+  for (let t of filterMap(stream)) {
+    yield t;
+    //meaningful tokens
+    if (Object.is(t.type, t) || t.type >= 4) {
+
+      //heuristic for regexp context
+      if (allowRegexpAfter.includes(t.rawValue)) {
+        stream.allowRegexp();
+      } else {
+        stream.disallowRegexp();
+      }
+
+      //template literal substitution
+      if (t.type === categories.TemplateHead || t.type === categories.TemplateMiddle) {
+        substitutionStack.push(0);
+        stream.disallowRightBrace();
+        stream.allowRegexp();
+      } else if (t.type === categories.TemplateTail) {
+        substitutionStack.pop();
+      }
+
+      //without context we need to backtrack braces
+      if (substitutionStack.length) {
+
+        const lastSubstitutionIndex = substitutionStack.length - 1;
+
+        if (t.rawValue === '{') {
+          substitutionStack[lastSubstitutionIndex] = substitutionStack[lastSubstitutionIndex] + 1;
+          stream.allowRightBrace();
+        }
+
+        if (t.rawValue === '}') {
+          let pending = substitutionStack[lastSubstitutionIndex] = substitutionStack[lastSubstitutionIndex] - 1;
+          if (pending === 0) {
+            stream.disallowRightBrace();
+          }
+        }
+      }
+    }
+  }
+};
+
+var tokenizer = plan()
+  .test('should be able to switch syntactic context alone (for regexp)', t => {
+    const tokens = [...tokenize('foo = bar / 4')];
+    t.deepEqual(tokens.map(tok => tok.type), [
+      categories.Identifier,
+      defaultRegistry.get('='),
+      categories.Identifier,
+      defaultRegistry.get('/'),
+      categories.NumericLiteral
+    ]);
+  })
+  .test('should be able to switch syntactic context alone (for regexp)', t => {
+    const tokens = [...tokenize('foo = /bar/g')];
+    t.deepEqual(tokens.map(tok => tok.type), [
+      categories.Identifier,
+      defaultRegistry.get('='),
+      categories.RegularExpressionLiteral
+    ]);
+  })
+  .test('should be able to switch syntactic context alone (for template literals)', t => {
+    const tokens = [...tokenize("`foo ${bar + bim}blah`")];
+    t.deepEqual(tokens.map(tok => tok.type), [
+      categories.TemplateHead,
+      categories.Identifier,
+      defaultRegistry.get('+'),
+      categories.Identifier,
+      categories.TemplateTail
+    ]);
+  })
+  .test('should be able to switch syntactic context alone (for template literals)', t => {
+    const tokens = [...tokenize("if(foo){ bar } else { bim }")];
+    t.deepEqual(tokens.map(tok => tok.type), [
+      defaultRegistry.get('if'),
+      defaultRegistry.get('('),
+      categories.Identifier,
+      defaultRegistry.get(')'),
+      defaultRegistry.get('{'),
+      categories.Identifier,
+      defaultRegistry.get('}'),
+      defaultRegistry.get('else'),
+      defaultRegistry.get('{'),
+      categories.Identifier,
+      defaultRegistry.get('}'),
+    ]);
+  })
+  .test('should be able to switch syntactic context alone (for template literals)', t => {
+    const tokens = [...tokenize("`foo ${bar + bim}blah ${bar} woot`")];
+    t.deepEqual(tokens.map(tok => tok.type), [
+      categories.TemplateHead,
+      categories.Identifier,
+      defaultRegistry.get('+'),
+      categories.Identifier,
+      categories.TemplateMiddle,
+      categories.Identifier,
+      categories.TemplateTail
+    ]);
+  })
+  .test('should be able to switch syntactic context alone (for template literals)', t => {
+    const tokens = [...tokenize("`foo ${({bim:'blah'})}`")];
+    t.deepEqual(tokens.map(tok => tok.type), [
+      categories.TemplateHead,
+      defaultRegistry.get('('),
+      defaultRegistry.get('{'),
+      categories.Identifier,
+      defaultRegistry.get(':'),
+      categories.StringLiteral,
+      defaultRegistry.get('}'),
+      defaultRegistry.get(')'),
+      categories.TemplateTail
+    ]);
+  });
 
 plan()
   .test(p)
@@ -1035,7 +1348,9 @@ plan()
   .test(p$5)
   .test(p$6)
   .test(p$7)
+  .test(p$9)
   .test(p$8)
+  .test(tokenizer)
   .run();
 
 }());

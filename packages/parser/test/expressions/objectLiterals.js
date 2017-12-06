@@ -201,4 +201,159 @@ export default zora()
       }]
     });
   })
-
+  .only('parse expression {get test(){}}', t => {
+    t.deepEqual(parse('{get test(){}}'), {
+      type: 'ObjectExpression',
+      properties:
+        [{
+          type: 'Property',
+          key: {type: 'Identifier', name: 'test'},
+          value:
+            {
+              type: 'FunctionExpression',
+              id: null,
+              params: [],
+              body: {type: 'BlockStatement', body: []},
+              generator: false,
+              async: false
+            },
+          kind: 'get',
+          computed: false,
+          method: false,
+          shorthand: false
+        }]
+    });
+  })
+  .only('parse expression {set test(val){}}', t => {
+    t.deepEqual(parse('{set test(val){}}'), {
+      type: 'ObjectExpression',
+      properties:
+        [{
+          type: 'Property',
+          key: {type: 'Identifier', name: 'test'},
+          value:
+            {
+              type: 'FunctionExpression',
+              id: null,
+              params: [{type: 'Identifier', name: 'val'}],
+              body: {type: 'BlockStatement', body: []},
+              generator: false,
+              async: false
+            },
+          kind: 'set',
+          computed: false,
+          method: false,
+          shorthand: false
+        }]
+    });
+  })
+  .only('parse expression{test(){}}', t => {
+    t.deepEqual(parse('{test(){}}'), {
+      type: 'ObjectExpression',
+      properties:
+        [{
+          type: 'Property',
+          key: {type: 'Identifier', name: 'test'},
+          value:
+            {
+              type: 'FunctionExpression',
+              id: null,
+              params: [],
+              body: {type: 'BlockStatement', body: []},
+              generator: false,
+              async: false
+            },
+          kind: 'init',
+          computed: false,
+          method: true,
+          shorthand: false
+        }]
+    });
+  })
+  .only('parse expression{test(foo){}}', t => {
+    t.deepEqual(parse('{test(foo){}}'), {
+      type: 'ObjectExpression',
+      properties:
+        [{
+          type: 'Property',
+          key: {type: 'Identifier', name: 'test'},
+          value:
+            {
+              type: 'FunctionExpression',
+              id: null,
+              params: [{type: 'Identifier', name: 'foo'}],
+              body: {type: 'BlockStatement', body: []},
+              generator: false,
+              async: false
+            },
+          kind: 'init',
+          computed: false,
+          method: true,
+          shorthand: false
+        }]
+    });
+  })
+  .only('parse expression{test(foo, bar){}}', t => {
+    t.deepEqual(parse('{test(foo, bar){}}'), {
+      type: 'ObjectExpression',
+      properties:
+        [{
+          type: 'Property',
+          key: {type: 'Identifier', name: 'test'},
+          value:
+            {
+              type: 'FunctionExpression',
+              id: null,
+              params:
+                [{type: 'Identifier', name: 'foo'},
+                  {type: 'Identifier', name: 'bar'}],
+              body: {type: 'BlockStatement', body: []},
+              generator: false,
+              async: false
+            },
+          kind: 'init',
+          computed: false,
+          method: true,
+          shorthand: false
+        }]
+    });
+  })
+  .test('parse expression{b}', t => {
+    t.deepEqual(parse('{b}'), {
+      type: 'ObjectExpression',
+      properties:
+        [{
+          type: 'Property',
+          key: {type: 'Identifier', name: 'b'},
+          value: {type: 'Identifier', name: 'b'},
+          kind: 'init',
+          computed: false,
+          method: false,
+          shorthand: true
+        }]
+    });
+  })
+  .test('parse expression{b, c}', t => {
+    t.deepEqual(parse('{b, c}'), {
+      type: 'ObjectExpression',
+      properties:
+        [{
+          type: 'Property',
+          key: {type: 'Identifier', name: 'b'},
+          value: {type: 'Identifier', name: 'b'},
+          kind: 'init',
+          computed: false,
+          method: false,
+          shorthand: true
+        },
+          {
+            type: 'Property',
+            key: {type: 'Identifier', name: 'c'},
+            value: {type: 'Identifier', name: 'c'},
+            kind: 'init',
+            computed: false,
+            method: false,
+            shorthand: true
+          }]
+    });
+  })

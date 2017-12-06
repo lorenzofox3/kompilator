@@ -1,7 +1,7 @@
 import {default as stream, forwardArrityOne} from './source';
 import {default as defaultRegistry} from './tokens';
 import {parseStatementList} from "./statements";
-import {Program} from "./ast";
+import {Program, Identifier} from "./ast";
 
 export const parserFactory = (tokens = defaultRegistry) => {
 
@@ -9,7 +9,7 @@ export const parserFactory = (tokens = defaultRegistry) => {
   const getPrefixPrecedence = operator => tokens.hasPrefix(operator) ? tokens.getPrefix(operator).precedence : -1;
 
   const parseInfix = (parser, left, precedence, exits) => {
-    parser.disallowRegexp();
+    parser.disallowRegexp(); //regexp as a literal is a "prefix operator" so a "/" in infix position is a div punctuator
     const {value: operator} = parser.lookAhead();
     if (!operator || precedence >= getInfixPrecedence(operator) || exits.includes(operator.type)) {
       return left;
@@ -21,25 +21,24 @@ export const parserFactory = (tokens = defaultRegistry) => {
   };
 
   return code => {
-
     const tokenStream = stream(code);
-
     const parser = Object.assign(forwardArrityOne({
         expect: symbol => tokenStream.expect(tokens.get(symbol)), //more convenient to have it from the symbol
         eventually: symbol => tokenStream.eventually(tokens.get(symbol)), //more convenient to have it from the symbol
         getInfixPrecedence,
         getPrefixPrecedence,
         expression (precedence = -1, exits = []) {
-          parser.allowRegexp();
+          parser.allowRegexp(); //regexp as literal is a "prefix operator"
           const {value: token} = parser.lookAhead();
           if (!tokens.hasPrefix(token)) {
             if (token.isReserved === true) { // reserved words are allowed as identifier names (such in member expressions)
               parser.eat();
-              return {type: 'Identifier', name: token.value};
+              return Identifier({name: token.value});
             }
             return null;
           }
           const left = tokens.getPrefix(token).parse(parser);
+
           return parseInfix(parser, left, precedence, exits);
         },
         program () {
@@ -50,7 +49,7 @@ export const parserFactory = (tokens = defaultRegistry) => {
         module () {
           throw new Error('not implemented');
         },
-      }, tokenStream, 'lookAhead', 'next', 'eat', 'allowRegexp', 'disallowRegexp'),
+      }, tokenStream, 'lookAhead', 'next', 'eat', 'allowRegexp', 'disallowRegexp', 'allowRightBrace', 'disallowRightBrace'),
       tokens);
 
     return parser;

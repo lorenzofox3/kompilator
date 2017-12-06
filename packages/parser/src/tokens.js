@@ -19,6 +19,7 @@ export const ECMAScriptTokenRegistry = () => {
   prefixMap.set(registry.get('typeof'), {parse: expressions.parseUnaryExpression, precedence: 16});
   prefixMap.set(registry.get('void'), {parse: expressions.parseUnaryExpression, precedence: 16});
   prefixMap.set(registry.get('delete'), {parse: expressions.parseUnaryExpression, precedence: 16});
+  prefixMap.set(registry.get('...'), {parse: expressions.parseSpreadExpression, precedence: 1});
   //update operators
   prefixMap.set(registry.get('--'), {parse: expressions.parseUpdateExpressionAsPrefix, precedence: 16});
   prefixMap.set(registry.get('++'), {parse: expressions.parseUpdateExpressionAsPrefix, precedence: 16});
@@ -32,6 +33,8 @@ export const ECMAScriptTokenRegistry = () => {
   prefixMap.set(registry.get('null'), {parse: expressions.parseLiteralExpression, precedence: -1});
   prefixMap.set(registry.get('false'), {parse: expressions.parseLiteralExpression, precedence: -1});
   prefixMap.set(registry.get('true'), {parse: expressions.parseLiteralExpression, precedence: -1});
+  prefixMap.set(categories.Template, {parse: expressions.parseTemplateLiteral, precedence: -1});
+  prefixMap.set(categories.TemplateHead, {parse: expressions.parseTemplateLiteral, precedence: -1});
   prefixMap.set(registry.get('['), {parse: expressions.parseArrayLiteralExpression, precedence: -1});
   prefixMap.set(registry.get('{'), {parse: expressions.parseObjectLiteralExpression, precedence: -1});
   //identifiers
@@ -102,23 +105,23 @@ export const ECMAScriptTokenRegistry = () => {
    */
 
   const statementsMap = new Map();
-  statementsMap.set(registry.get('if'),statements.parseIfStatement);
-  statementsMap.set(registry.get(';'),statements.parseEmptyStatement);
-  statementsMap.set(registry.get('{'),statements.parseBlockStatement);
-  statementsMap.set(registry.get('for'),statements.parseForStatement);
-  statementsMap.set(registry.get('var'),withEventualSemiColon(statements.parseVariableDeclaration));
-  statementsMap.set(registry.get('function'),statements.parseFunctionDeclaration);
-  statementsMap.set(registry.get('return'),withEventualSemiColon(statements.parseReturnStatement));
-  statementsMap.set(registry.get('break'),withEventualSemiColon(statements.parseBreakStatement));
-  statementsMap.set(registry.get('continue'),withEventualSemiColon(statements.parseContinueStatement));
-  statementsMap.set(registry.get('throw'),withEventualSemiColon(statements.parseThrowStatement));
-  statementsMap.set(registry.get('while'),withEventualSemiColon(statements.parseWhileStatement));
-  statementsMap.set(registry.get('do'),withEventualSemiColon(statements.parseDoWhileStatement));
-  statementsMap.set(registry.get('try'),statements.parseTryStatement);
-  statementsMap.set(registry.get('switch'),statements.parseSwitchStatement);
-  statementsMap.set(registry.get('with'),statements.parseWithStatement);
-  statementsMap.set(registry.get('debugger'),withEventualSemiColon(statements.parseDebuggerStatement));
-  statementsMap.set(categories.Identifier,statements.parseExpressionOrLabeledStatement);
+  statementsMap.set(registry.get('if'), statements.parseIfStatement);
+  statementsMap.set(registry.get(';'), statements.parseEmptyStatement);
+  statementsMap.set(registry.get('{'), statements.parseBlockStatement);
+  statementsMap.set(registry.get('for'), statements.parseForStatement);
+  statementsMap.set(registry.get('var'), withEventualSemiColon(statements.parseVariableDeclaration));
+  statementsMap.set(registry.get('function'), statements.parseFunctionDeclaration);
+  statementsMap.set(registry.get('return'), withEventualSemiColon(statements.parseReturnStatement));
+  statementsMap.set(registry.get('break'), withEventualSemiColon(statements.parseBreakStatement));
+  statementsMap.set(registry.get('continue'), withEventualSemiColon(statements.parseContinueStatement));
+  statementsMap.set(registry.get('throw'), withEventualSemiColon(statements.parseThrowStatement));
+  statementsMap.set(registry.get('while'), withEventualSemiColon(statements.parseWhileStatement));
+  statementsMap.set(registry.get('do'), withEventualSemiColon(statements.parseDoWhileStatement));
+  statementsMap.set(registry.get('try'), statements.parseTryStatement);
+  statementsMap.set(registry.get('switch'), statements.parseSwitchStatement);
+  statementsMap.set(registry.get('with'), statements.parseWithStatement);
+  statementsMap.set(registry.get('debugger'), withEventualSemiColon(statements.parseDebuggerStatement));
+  statementsMap.set(categories.Identifier, statements.parseExpressionOrLabeledStatement);
 
   return Object.assign(registry, {
     getInfix (token) {

@@ -1,5 +1,10 @@
 import {categories} from "../../tokenizer/src/tokens";
-import {parseBindingIdentifierOrPattern, parseBlockStatement, parseFormalParameters} from "./statements";
+import {
+  parseBindingIdentifierOrPattern,
+  parseBlockStatement,
+  parseFormalParameters,
+} from "./statements";
+import {parseArrayElision, parseLiteralPropertyName, parseComputedPropertyName} from "./utils";
 import * as ast from "./ast";
 
 //todo 1. check whether a real compose affects performances or not
@@ -68,19 +73,36 @@ export const parseNewExpression = Prefix(ast.NewExpression, parser => {
     arguments: callee.arguments ? callee.arguments : []
   };
 });
+export const parseSpreadExpression = Prefix(ast.SpreadElement, parser => {
+  parser.expect('...');
+  return {
+    argument: parser.expression(parser.getPrefixPrecedence(parser.get('...')))
+  };
+});
 
-//Arrays literals
+//Array literals
 const parseArrayElements = (parser, elements = []) => {
-  const {value: token} = parser.lookAhead();
-  if (token === parser.get(']')) {
+  const {value: next} = parser.lookAhead();
+  const comma = parser.get(',');
+
+  if (next === parser.get(']')) {
     return elements;
   }
-  const comma = parser.get(',');
-  elements.push(parser.expression(parser.getInfixPrecedence(comma)));
-  const {value: nextToken} = parser.lookAhead();
-  if (nextToken === comma) {
-    parser.eat();
+
+  if (next === parser.get('...')) {
+    elements.push(parseSpreadExpression(parser));
+    parser.eventually(',');
+    return parseArrayElements(parser, elements);
   }
+
+  if (next === comma) {
+    parseArrayElision(parser, elements);
+    return parseArrayElements(parser, elements)
+  }
+
+  elements.push(parser.expression(parser.getInfixPrecedence(comma)));
+  parser.eventually(',');
+
   return parseArrayElements(parser, elements);
 };
 export const parseArrayLiteralExpression = Prefix(ast.ArrayExpression, (parser) => {
@@ -92,48 +114,110 @@ export const parseArrayLiteralExpression = Prefix(ast.ArrayExpression, (parser) 
   return node;
 });
 
+//Object literals
+const parsePropertyFromIdentifier = (parser) => {
+  const {value: next} = parser.lookAhead();
+  const {value: secondNext} = parser.lookAhead(1);
+
+  if (next.value === 'get') {
+    return parseGetter(parser);
+  }
+
+  if (next.value === 'set') {
+    return parseSetter(parser);
+  }
+
+  if (secondNext === parser.get('(')) {
+    return parseObjectMethod(parser);
+  }
+};
+const parseGetter = parser => {
+  parser.eat(); // eat accessor
+  const propertyName = parseIdentifierExpression(parser);
+  parser.expect('(');
+  parser.expect(')');
+  const value = ast.FunctionExpression({
+    id: null,
+    params: [],
+    generator: false,
+    async: false,
+    body: parseBlockStatement(parser)
+  });
+  return {
+    kind: 'get',
+    key: propertyName,
+    value
+  };
+};
+const parseSetter = parser => {
+  parser.eat(); // eat accessor
+  const propertyName = parseIdentifierExpression(parser);
+  parser.expect('(');
+  const params = [parseBindingIdentifierOrPattern(parser)];
+  parser.expect(')');
+  const value = ast.FunctionExpression({
+    id: null,
+    params,
+    generator: false,
+    async: false,
+    body: parseBlockStatement(parser)
+  });
+  return {
+    kind: 'set',
+    key: propertyName,
+    value
+  };
+};
+const parsePropertyNameProperty = parser => {
+
+};
+const parseObjectMethod = parser => {
+  const key = parseIdentifierExpression(parser);
+  parser.expect('(');
+  const params = parseFormalParameters(parser);
+  parser.expect(')');
+  const body = parseBlockStatement(parser);
+  return {
+    method:true,
+    key,
+    value:ast.FunctionExpression({
+      params,
+      body,
+      id:null,
+      generator:false,
+      async:false
+    })
+  };
+};
+const parsePropertyDefinition = Prefix(ast.Property, parser => {
+  const {value: nextToken} = parser.lookAhead();
+  const property = ast.Property({
+    kind: 'init',
+    value: null,
+    computed: false,
+    shorthand: false,
+    method: false,
+  });
+
+  if (nextToken.type === categories.Identifier) { //identifier but no keyword (
+    Object.assign(property, parsePropertyFromIdentifier(parser));
+  } else {
+    Object.assign(property, parsePropertyNameProperty(parser));
+  }
+  return property;
+});
 const parsePropertyList = (parser, properties = []) => {
   const {value: nextToken} = parser.lookAhead();
   if (nextToken === parser.get('}')) {
     return properties;
   }
   if (nextToken !== parser.get(',')) {
-    properties.push(parseObjectPropertyExpression(parser));
+    properties.push(parsePropertyDefinition(parser));
   } else {
     parser.eat();
   }
   return parsePropertyList(parser, properties);
 };
-const isPropertyName = (parser, token) => token === parser.get('[') || token.type === categories.Identifier || token.type === categories.NumericLiteral || token.type === categories.StringLiteral || token.isReserved === true;
-export const parseObjectPropertyExpression = Prefix(ast.Property, parser => {
-  const {value: nextToken} = parser.lookAhead();
-  let key;
-  let kind = 'init';
-  let value = null;
-  let computed = false;
-  let shorthand = false;
-  let method = false;
-  if (isPropertyName(parser, nextToken)) {
-    if (parser.eventually('[')) {
-      computed = true;
-      key = parser.expression();
-      parser.expect(']');
-    } else {
-      key = parser.expression(20)
-    }
-    parser.expect(':');
-    value = parser.expression(parser.getInfixPrecedence(parser.get(',')))
-  }
-
-  return {
-    key,
-    value,
-    kind,
-    computed,
-    method,
-    shorthand
-  };
-});
 export const parseObjectLiteralExpression = Prefix(ast.ObjectExpression, (parser) => {
   parser.expect('{');
   const node = {
@@ -184,7 +268,6 @@ export const parseMemberAccessExpression = Infix(ast.MemberExpression, (parser, 
   return node;
 });
 export const parseUpdateExpression = Infix(ast.UpdateExpression, (parser, left, operator) => ({
-  type: 'UpdateExpression',
   argument: left,
   operator: operator.value,
   prefix: false
@@ -207,7 +290,6 @@ export const parseCallExpression = Infix(ast.CallExpression, (parser, callee) =>
   parser.expect(')');
   return node;
 });
-
 export const parseSequenceExpression = Infix(ast.SequenceExpression, (parser, left) => {
   let node = left;
   const comma = parser.get(',');
@@ -216,7 +298,6 @@ export const parseSequenceExpression = Infix(ast.SequenceExpression, (parser, le
     left.expressions.push(next);
   } else {
     node = {
-      type: 'SequenceExpression',
       expressions: [left, next]
     }
   }

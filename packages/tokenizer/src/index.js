@@ -1,6 +1,6 @@
 import {sourceStream} from "./source";
-import {allowRegexpAfter} from "./tokens";
-import {lazyFilterWith, lazyMapWith} from "./utils";
+import {allowRegexpAfter, categories} from "./tokens";
+import {syntacticFlags, lazyFilterWith, lazyMapWith} from "./utils";
 import {default as defaultScanner} from './scanners';
 import {default as defaultRegistry} from './tokens';
 
@@ -22,23 +22,37 @@ todo: later we can give ability to the consumer to configure the scanner to perf
 //return an iterable sequence of lexemes (note it can only be consumed once like a generator)
 //The consumer (like a parser) will have to handle the syntactic state and the token evaluation by itself
 export const lexemes = (code, scanner) => {
-  let isRegexpAllowed = true;
+  let context = syntacticFlags.allowRegexp | syntacticFlags.allowRightBrace;
+  let previousContext = context;
   const source = sourceStream(code);
+  const holdContext = fn => _ => {
+    previousContext = context;
+    fn();
+  };
   return {
     * [Symbol.iterator] () {
       while (true) {
         if (source.done === true) {
           return;
         }
-        yield scanner(source, isRegexpAllowed);
+        yield scanner(source, context);
       }
     },
-    allowRegexp () {
-      isRegexpAllowed = true;
+    restoreContext () {
+      context = previousContext
     },
-    disallowRegexp () {
-      isRegexpAllowed = false;
-    },
+    allowRegexp: holdContext(() => {
+      context |= syntacticFlags.allowRegexp;
+    }),
+    disallowRegexp: holdContext(() => {
+      context &= ~syntacticFlags.allowRegexp;
+    }),
+    allowRightBrace: holdContext(() => { // as punctuator vs template middle/tail
+      context |= syntacticFlags.allowRightBrace;
+    }),
+    disallowRightBrace: holdContext(() => {
+      context &= ~syntacticFlags.allowRightBrace;
+    }),
     loc () {
       return source.loc();
     }
@@ -61,13 +75,45 @@ export const tokenize = function* (code, {scanner = defaultScanner, tokenRegistr
   const filterMap = iter => mapFunc(filterFunc(iter));
   const stream = lexemes(code, scanner);
 
+  let substitutionStack = []; //pending braces
+
   for (let t of filterMap(stream)) {
     yield t;
+    //meaningful tokens
     if (Object.is(t.type, t) || t.type >= 4) {
+
+      //heuristic for regexp context
       if (allowRegexpAfter.includes(t.rawValue)) {
         stream.allowRegexp();
       } else {
         stream.disallowRegexp();
+      }
+
+      //template literal substitution
+      if (t.type === categories.TemplateHead || t.type === categories.TemplateMiddle) {
+        substitutionStack.push(0);
+        stream.disallowRightBrace();
+        stream.allowRegexp();
+      } else if (t.type === categories.TemplateTail) {
+        substitutionStack.pop();
+      }
+
+      //without context we need to backtrack braces
+      if (substitutionStack.length) {
+
+        const lastSubstitutionIndex = substitutionStack.length - 1;
+
+        if (t.rawValue === '{') {
+          substitutionStack[lastSubstitutionIndex] = substitutionStack[lastSubstitutionIndex] + 1;
+          stream.allowRightBrace();
+        }
+
+        if (t.rawValue === '}') {
+          let pending = substitutionStack[lastSubstitutionIndex] = substitutionStack[lastSubstitutionIndex] - 1;
+          if (pending === 0) {
+            stream.disallowRightBrace();
+          }
+        }
       }
     }
   }

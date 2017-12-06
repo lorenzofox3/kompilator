@@ -16,6 +16,7 @@ import continueStatements from './continue';
 import withStatements from './with';
 import throwStatements from './throws';
 import tryCatch from './tryCatchFinally';
+import destructuring from './destructuring';
 
 export default zora()
   .test(empty)
@@ -34,4 +35,6 @@ export default zora()
   .test(continueStatements)
   .test(withStatements)
   .test(throwStatements)
-  .test(tryCatch);
+  .test(tryCatch)
+  .test(destructuring)
+

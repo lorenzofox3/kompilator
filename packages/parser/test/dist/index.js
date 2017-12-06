@@ -399,6 +399,11 @@ const lazyFilterWith = fn => function* (iterator) {
   }
 };
 
+const syntacticFlags = {
+  allowRegexp: 1 << 0,
+  allowRightBrace: 1 << 1
+};
+
 //todo put track loc as an option ?
 const sourceStream = (code) => {
   const lineTerminatorRegexp = /[\u000a\u000d\u2028\u2029]/g;
@@ -409,7 +414,7 @@ const sourceStream = (code) => {
   const test = (regexp) => nextStretch().search(regexp) === 0;
   const nextSubStr = (count = 1) => code.substr(index, count);
   const seeNextAt = (offset = 0) => code[index + offset];
-  const nextStretch = () => nextSubStr(3); //we need three chars to be really sure of the current lexical production
+  const nextStretch = () => nextSubStr(3); //we need three chars to be really sure of the current lexical production (0x3...)
   const loc = () => ({col, line});
 
   const advance = (number = 1) => {
@@ -490,18 +495,17 @@ const puncutators = `{ ( ) [ ] . ... ; , < > <= >= == != === !== + - * % ** ++ -
 const allowRegexpAfter = 'case delete do else in instanceof new return throw typeof void { ( [ . ; , < > <= >= == != === !== + - * << >> >>> & | ^ ! ~ && || ? : = += -= *= %= <<= >>= >>>= &= |= ^= /='.split(' ');
 
 const createLanguageToken = (symbol, value) => {
-  const token = Object.create(null, {
+  return Object.freeze(Object.assign(Object.create(null, {
     type: {
       get () {
         return this; //type is an alias to itself (so we can use in Maps as we would to for other categories such literals, etc)
       }
-    },
-    value: {value: value !== void 0 ? value : symbol},
-    rawValue: {value: symbol, enumerable: true},
-    isReserved: {value: reservedKeywords.includes(symbol), enumerable: true}
-  });
-
-  return Object.freeze(token);
+    }
+  }), {
+    value: value !== void  0 ? value : symbol,
+    rawValue: symbol,
+    isReserved: reservedKeywords.includes(symbol)
+  }));
 };
 
 //create a token table
@@ -524,14 +528,15 @@ const tokenRegistry = () => {
         switch (lexeme.type) {
           case categories.StringLiteral:
             return Object.assign(lexeme, {
-              value: lexeme.rawValue.substr(1, lexeme.rawValue.length - 2)
+              value: lexeme.rawValue.substr(1, lexeme.rawValue.length - 2),
+              isReserved: false
             });
           case categories.NumericLiteral:
-            return Object.assign(lexeme, {value: Number(lexeme.rawValue)});
+            return Object.assign(lexeme, {value: Number(lexeme.rawValue), isReserved: false});
           case categories.RegularExpressionLiteral:
-            return Object.assign(lexeme, {value: new RegExp(lexeme.pattern, lexeme.flags)});
+            return Object.assign(lexeme, {isReserved: false, value: new RegExp(lexeme.pattern, lexeme.flags)});
           default:
-            return Object.assign(lexeme, {value: lexeme.rawValue});
+            return Object.assign(lexeme, {isReserved: false, value: lexeme.rawValue});
         }
       }
       return tokenMap.get(lexeme.rawValue);
@@ -555,6 +560,10 @@ const CHAR_LEFT_BRACKET = '[';
 const CHAR_RIGHT_BRACKET = ']';
 const CHAR_DOT = '.';
 const SPREAD = '...';
+const CHAR_TEMPLATE_QUOTE = '`';
+const CHAR_DOLLAR = '$';
+const CHAR_BRACE_OPEN = '{';
+const CHAR_BRACE_CLOSE = '}';
 
 const lexemeFromRegExp = (regExp, category) => sourceStream => ({type: category, rawValue: sourceStream.match(regExp)});
 const testFromRegExp = regExp => sourceStream => sourceStream.test(regExp);
@@ -690,9 +699,16 @@ const punctuators = (punctuatorList = puncutators) => {
     rawValue: (sourceStream.nextSubStr(3) === SPREAD) ? sourceStream.read(3) : sourceStream.read(1)
   });
   return {
-    test (sourceStream, allowRegexp) {
+    test (sourceStream, context) {
       const next = sourceStream.seeNextAt();
-      return (next === CHAR_SLASH && allowRegexp === false) || sizeOnePunctuatorList.includes(next);
+      switch (next) {
+        case CHAR_SLASH:
+          return ~context & syntacticFlags.allowRegexp;
+        case CHAR_BRACE_CLOSE:
+          return context & syntacticFlags.allowRightBrace;
+        default:
+          return sizeOnePunctuatorList.includes(next);
+      }
     },
     lexeme: sourceStream => sourceStream.seeNextAt() === CHAR_DOT ? lexemeFromDot(sourceStream) : lexeme(sourceStream)
   };
@@ -739,9 +755,9 @@ const scanRegExpFlags = (sourceStream, count) => {
 
 const regularExpression = () => {
   return {
-    test (sourceStream, allowRegexp) {
+    test (sourceStream, context) {
       const next = sourceStream.seeNextAt();
-      return allowRegexp && next === CHAR_SLASH;
+      return (context & syntacticFlags.allowRegexp) && next === CHAR_SLASH;
     },
     lexeme (sourceStream) {
       const body = scanRegExpBody(sourceStream);
@@ -757,21 +773,76 @@ const regularExpression = () => {
   };
 };
 
+const templateOrPart = (onExit = categories.Template, onFollow = categories.TemplateHead) => {
+  const fn = (sourceStream, count = 1) => {
+    const next = sourceStream.seeNextAt(count);
+    count += 1;
+    if (next === CHAR_TEMPLATE_QUOTE) {
+      return {
+        type: onExit,
+        rawValue: sourceStream.read(count)
+      };
+    }
+
+    if (next === CHAR_DOLLAR && sourceStream.seeNextAt(count) === CHAR_BRACE_OPEN) {
+      return {
+        type: onFollow,
+        rawValue: sourceStream.read(count + 1)
+      };
+    }
+
+    if (next === CHAR_BACKSLASH) {
+      count += 1;
+    }
+
+    return fn(sourceStream, count);
+
+  };
+  return fn;
+};
+const headOrTemplate = templateOrPart();
+const templateHeadOrLiteral = () => {
+  return {
+    test (sourceStream) {
+      const next = sourceStream.seeNextAt();
+      return next === CHAR_TEMPLATE_QUOTE;
+    },
+    lexeme (sourceStream) {
+      return headOrTemplate(sourceStream);
+    }
+  };
+};
+
+const middleOrTail = templateOrPart(categories.TemplateTail, categories.TemplateMiddle);
+const templateTailOrMiddle = () => {
+  return {
+    test (sourceStream, context) {
+      const next = sourceStream.seeNextAt();
+      return next === CHAR_BRACE_CLOSE && (~context & syntacticFlags.allowRightBrace);
+    },
+    lexeme (sourceStream) {
+      return middleOrTail(sourceStream);
+    }
+  }
+};
+
 const ECMAScriptLexicalGrammar = [
   whiteSpace,
   lineTerminator,
   numbers,
   singleLineComment,
   multiLineComment,
-  regularExpression,
   punctuators,
   identifiers,
-  stringLiteral
+  regularExpression,
+  stringLiteral,
+  templateHeadOrLiteral,
+  templateTailOrMiddle
 ];
 
 const scanner = (lexicalRules = ECMAScriptLexicalGrammar.map(g => g())) => {
-  return (source, isRegexpAllowed) => {
-    const rule = lexicalRules.find(lr => lr.test(source, isRegexpAllowed));
+  return (source, context) => {
+    const rule = lexicalRules.find(lr => lr.test(source, context));
     if (rule === void 0) {
       throw new Error(`could not understand the symbol ${source.seeNextAt()}`);
     }
@@ -799,23 +870,37 @@ todo: later we can give ability to the consumer to configure the scanner to perf
 //return an iterable sequence of lexemes (note it can only be consumed once like a generator)
 //The consumer (like a parser) will have to handle the syntactic state and the token evaluation by itself
 const lexemes = (code, scanner$$1) => {
-  let isRegexpAllowed = true;
+  let context = syntacticFlags.allowRegexp | syntacticFlags.allowRightBrace;
+  let previousContext = context;
   const source = sourceStream(code);
+  const holdContext = fn => _ => {
+    previousContext = context;
+    fn();
+  };
   return {
     * [Symbol.iterator] () {
       while (true) {
         if (source.done === true) {
           return;
         }
-        yield scanner$$1(source, isRegexpAllowed);
+        yield scanner$$1(source, context);
       }
     },
-    allowRegexp () {
-      isRegexpAllowed = true;
+    restoreContext () {
+      context = previousContext;
     },
-    disallowRegexp () {
-      isRegexpAllowed = false;
-    },
+    allowRegexp: holdContext(() => {
+      context |= syntacticFlags.allowRegexp;
+    }),
+    disallowRegexp: holdContext(() => {
+      context &= ~syntacticFlags.allowRegexp;
+    }),
+    allowRightBrace: holdContext(() => { // as punctuator vs template middle/tail
+      context |= syntacticFlags.allowRightBrace;
+    }),
+    disallowRightBrace: holdContext(() => {
+      context &= ~syntacticFlags.allowRightBrace;
+    }),
     loc () {
       return source.loc();
     }
@@ -852,6 +937,11 @@ const NewExpression = nodeFactory('NewExpression', {
   * [Symbol.iterator] () {
     yield this.callee;
     yield* this.arguments;
+  }
+});
+const SpreadElement = nodeFactory('SpreadElement', {
+  * [Symbol.iterator] () {
+    yield this.argument;
   }
 });
 const ArrayExpression = nodeFactory('ArrayExpression', {
@@ -907,15 +997,6 @@ const SequenceExpression = nodeFactory('SequenceExpression', {
 });
 
 //statements nodes
-//todo refactoring with function expression
-const FunctionDeclaration = nodeFactory('FunctionDeclaration', {
-  * [Symbol.iterator] () {
-    yield this.id;
-    yield* this.params;
-    yield this.body;
-  }
-});
-//todo refactoring with conditional expression
 const IfStatement = nodeFactory('IfStatement', {
   * [Symbol.iterator] () {
     yield this.test;
@@ -956,7 +1037,12 @@ const SwitchStatement = nodeFactory('SwitchStatement', {
     yield* this.cases;
   }
 });
-
+const SwitchCase = nodeFactory('SwitchCase', {
+  * [Symbol.iterator] () {
+    yield this.test;
+    yield* this.consequent;
+  }
+});
 const ThrowStatement = nodeFactory('ThrowStatement', {
   * [Symbol.iterator] () {
     yield this.expression;
@@ -982,14 +1068,19 @@ const DoWhileStatement = nodeFactory('DoWhileStatement', {
     yield this.test;
   }
 });
-
-const VariableDeclaration = nodeFactory('VariableDeclaration', {
+const ForInStatement = nodeFactory('ForInStatement', {
   * [Symbol.iterator] () {
-    yield* this.declarations;
+    yield this.left;
+    yield this.right;
   }
 });
-
-
+const ForStatement = nodeFactory('ForStatement', {
+  * [Symbol.iterator] () {
+    yield this.init;
+    yield this.test;
+    yield this.update;
+  }
+});
 const LabeledStatement = nodeFactory('LabeledStatement', {
   * [Symbol.iterator] () {
     yield this.body;
@@ -1002,13 +1093,75 @@ const Program = nodeFactory('Program', {
   }
 });
 
+//declarations
+const AssignmentPattern = nodeFactory('AssignmentPattern', {
+  * [Symbol.iterator] () {
+    yield this.left;
+    yield this.right;
+  }
+});
+const FunctionDeclaration = nodeFactory('FunctionDeclaration', {
+  * [Symbol.iterator] () {
+    yield this.id;
+    yield* this.params;
+    yield this.body;
+  }
+});
+const VariableDeclarator = nodeFactory('VariableDeclarator', {
+  * [Symbol.iterator] () {
+    yield this.id;
+    yield this.init;
+  }
+});
+const VariableDeclaration = nodeFactory('VariableDeclaration', {
+  * [Symbol.iterator] () {
+    yield* this.declarations;
+  }
+});
+const ArrayPattern = nodeFactory('ArrayPattern', {
+  * [Symbol.iterator] () {
+    yield* this.elements;
+  }
+});
+const RestElement = nodeFactory('RestElement', {
+  * [Symbol.iterator] () {
+    yield* this.argument;
+  }
+});
+const ObjectPattern = nodeFactory('ObjectPattern', {
+  * [Symbol.iterator] () {
+    yield* this.properties;
+  }
+});
+
+
 //walk & traverse
 
+const parseArrayElision = (parser, elements) => {
+  const {value: next} = parser.lookAhead();
+
+  if (next !== parser.get(',')) {
+    return elements;
+  }
+  elements.push(null);
+  parser.eat();
+  return parseArrayElision(parser, elements);
+};
+
+const parseComputedPropertyName = parser => {
+  parser.expect('[');
+  const key = parser.expression();
+  parser.expect(']');
+  return key;
+};
+const parseLiteralPropertyName = parser => parser.expression(20);// max precedence => a literal or an identifier of a keyword
+
+//todo see todo expressions Prefix / Infix Cominator
 const Statement = (factory, fn) => {
   if (!fn) {
     return factory;
   } else {
-    return parser => factory(fn(parser));
+    return (a, b) => factory(fn(a, b));
   }
 };
 
@@ -1155,16 +1308,15 @@ const parseSwitchCases = (parser, cases = []) => {
   return parseSwitchCases(parser, cases);
 };
 
-const parseSwitchCase = (parser, nextToken) => {
+const parseSwitchCase = Statement(SwitchCase, (parser, nextToken) => {
   const {type} = nextToken;
   const node = {
-    type: 'SwitchCase',
     test: type === parser.get('case') ? parser.expression() : null
   };
   parser.expect(':');
   node.consequent = parseStatementList(parser, ['}', 'case', 'default']);
   return node;
-};
+});
 
 const parseThrowStatement = Statement(ThrowStatement, parser => {
   parser.expect('throw');
@@ -1213,27 +1365,146 @@ const parseDoWhileStatement = Statement(DoWhileStatement, parser => {
   return node;
 });
 
-//todo
-const parseBindingIdentifierOrPattern = parser => {
-  return parser.expression(20);
-};
-
-const parseVariableDeclarators = (parser, declarators = []) => {
-  const id = parseBindingIdentifierOrPattern(parser);
-  let {value: nextToken} = parser.lookAhead();
-  let init = null;
-  const node = {
-    type: 'VariableDeclarator',
-    id: id
+const parseAssignmentPattern = Statement(AssignmentPattern, (parser, left) => {
+  return {
+    left,
+    right: parser.expression(parser.getInfixPrecedence(parser.get(',')))
   };
+});
+const parseRestElement = Statement(RestElement, parser => {
+  parser.expect('...');
+  return {
+    argument: parseBindingIdentifierOrPattern(parser)
+  }
+});
 
-  const comma = parser.get(',');
-  if (parser.eventually('=')) {
-    init = parser.expression(parser.getInfixPrecedence(comma));
-    nextToken = parser.lookAhead().value;
+const parseArrayElements$1 = (parser, elements = []) => {
+  const {value: next} = parser.lookAhead();
+
+  if (next === parser.get(']')) {
+    return elements;
   }
 
-  node.init = init;
+  if (next === parser.get('...')) {
+    elements.push(parseRestElement(parser));
+    parser.eventually(',');
+    return parseArrayElements$1(parser, elements);
+  }
+
+  if (next === parser.get(',')) {
+    parseArrayElision(parser, elements);
+    return parseArrayElements$1(parser, elements)
+  }
+
+  let element = parseBindingIdentifierOrPattern(parser);
+  if (parser.eventually('=')) {
+    element = parseAssignmentPattern(parser, element);
+  }
+  elements.push(element);
+  parser.eventually(',');
+
+  return parseArrayElements$1(parser, elements);
+};
+const parseArrayBindingPattern = Statement(ArrayPattern, parser => {
+  parser.expect('[');
+  const node = {
+    elements: parseArrayElements$1(parser)
+  };
+  parser.expect(']');
+  return node;
+});
+
+const parseSingleNameBindingProperty = parser => {
+  const key = parseIdentifierExpression(parser);
+  let value = key;
+  let shorthand = false; // legacy
+  if (parser.eventually(':')) {
+    value = parseBindingIdentifierOrPattern(parser);
+  } else {
+    shorthand = true; //legacy
+    value = key;
+  }
+
+  if (parser.eventually('=')) {
+    value = parseAssignmentPattern(parser, value);
+  }
+  return {shorthand, key, value};
+};
+const parsePropertyNameProperty$1 = parser => {
+  const {value: next} = parser.lookAhead();
+  let key;
+  let computed = false;
+  if (next === parser.get('[')) {
+    key = parseComputedPropertyName(parser);
+    computed = true; //legacy
+  } else {
+    key = parseLiteralPropertyName(parser);
+  }
+  parser.expect(':');
+  return {
+    key,
+    computed,
+    value: parseBindingIdentifierOrPattern(parser)
+  };
+};
+const parseBindingProperty = parser => {
+  const {value: next} = parser.lookAhead();
+  const property = Property({
+    method: false,
+    kind: 'init',
+    computed: false,
+    value: null,
+    shorthand: false
+  });
+  return next.type === categories.Identifier ? //identifier but not reserved word
+    Object.assign(property, parseSingleNameBindingProperty(parser)) :
+    Object.assign(property, parsePropertyNameProperty$1(parser));
+};
+const parseBindingPropertyList = (parser, properties = []) => {
+  const {value: next} = parser.lookAhead();
+  if (next === parser.get('}')) {
+    return properties;
+  }
+  if (next !== parser.get(',')) {
+    properties.push(parseBindingProperty(parser));
+  } else {
+    parser.eat(); //todo throw if next is another ','
+  }
+  return parseBindingPropertyList(parser, properties);
+};
+const parseObjectBindingPattern = Statement(ObjectPattern, parser => {
+  parser.expect('{');
+  const node = {
+    properties: parseBindingPropertyList(parser)
+  };
+  parser.expect('}');
+  return node;
+});
+
+const parseBindingIdentifierOrPattern = parser => {
+  const {value: next} = parser.lookAhead();
+  if (parser.get('{') === next) {
+    return parseObjectBindingPattern(parser);
+  } else if (parser.get('[') === next) {
+    return parseArrayBindingPattern(parser);
+  }
+  return parseIdentifierExpression(parser);
+};
+
+const parseVariableDeclarator = Statement(VariableDeclarator, (parser) => {
+  const node = {id: parseBindingIdentifierOrPattern(parser), init: null};
+  const comma = parser.get(',');
+
+  if (parser.eventually('=')) {
+    node.init = parser.expression(parser.getInfixPrecedence(comma));
+  }
+
+  return node;
+});
+const parseVariableDeclarators = (parser, declarators = []) => {
+  const node = parseVariableDeclarator(parser);
+  const comma = parser.get(',');
+  const {value: nextToken} = parser.lookAhead();
 
   declarators.push(node);
 
@@ -1242,17 +1513,18 @@ const parseVariableDeclarators = (parser, declarators = []) => {
   }
 
   parser.eat();
-
   return parseVariableDeclarators(parser, declarators);
 };
 
-const parseVariableDeclaration = Statement(VariableDeclaration, parser => {
-  parser.expect('var');
+const asVariableDeclaration = (nodeType, keyword) => Statement(nodeType, parser => {
+  parser.expect(keyword);
   return {
-    kind: 'var',
+    kind: keyword,
     declarations: parseVariableDeclarators(parser)
   };
 });
+
+const parseVariableDeclaration = asVariableDeclaration(VariableDeclaration, 'var');
 
 const getForDerivation = parser => {
   const {value: nextToken} = parser.lookAhead();
@@ -1265,26 +1537,25 @@ const getForDerivation = parser => {
       return asFor;
   }
 };
-const asForIn = (parser, left) => {
+
+const asForIn = Statement(ForInStatement, (parser, left) => {
   parser.expect('in');
-  const n = {
-    type: 'ForInStatement',
-    left
+  return {
+    left,
+    right: parser.expression()
   };
-  n.right = parser.expression();
-  return n;
-};
-const asFor = (parser, init) => {
+});
+
+const asFor = Statement(ForStatement, (parser, init) => {
   parser.expect(';');
   const n = {
-    type: 'ForStatement',
     init,
     test: parser.expression()
   };
   parser.expect(';');
   n.update = parser.expression();
   return n;
-};
+});
 
 //todo
 const asForOf = (parser, init) => {
@@ -1384,19 +1655,36 @@ const parseNewExpression = Prefix(NewExpression, parser => {
     arguments: callee.arguments ? callee.arguments : []
   };
 });
+const parseSpreadExpression = Prefix(SpreadElement, parser => {
+  parser.expect('...');
+  return {
+    argument: parser.expression(parser.getPrefixPrecedence(parser.get('...')))
+  };
+});
 
-//Arrays literals
+//Array literals
 const parseArrayElements = (parser, elements = []) => {
-  const {value: token} = parser.lookAhead();
-  if (token === parser.get(']')) {
+  const {value: next} = parser.lookAhead();
+  const comma = parser.get(',');
+
+  if (next === parser.get(']')) {
     return elements;
   }
-  const comma = parser.get(',');
-  elements.push(parser.expression(parser.getInfixPrecedence(comma)));
-  const {value: nextToken} = parser.lookAhead();
-  if (nextToken === comma) {
-    parser.eat();
+
+  if (next === parser.get('...')) {
+    elements.push(parseSpreadExpression(parser));
+    parser.eventually(',');
+    return parseArrayElements(parser, elements);
   }
+
+  if (next === comma) {
+    parseArrayElision(parser, elements);
+    return parseArrayElements(parser, elements)
+  }
+
+  elements.push(parser.expression(parser.getInfixPrecedence(comma)));
+  parser.eventually(',');
+
   return parseArrayElements(parser, elements);
 };
 const parseArrayLiteralExpression = Prefix(ArrayExpression, (parser) => {
@@ -1408,48 +1696,110 @@ const parseArrayLiteralExpression = Prefix(ArrayExpression, (parser) => {
   return node;
 });
 
+//Object literals
+const parsePropertyFromIdentifier = (parser) => {
+  const {value: next} = parser.lookAhead();
+  const {value: secondNext} = parser.lookAhead(1);
+
+  if (next.value === 'get') {
+    return parseGetter(parser);
+  }
+
+  if (next.value === 'set') {
+    return parseSetter(parser);
+  }
+
+  if (secondNext === parser.get('(')) {
+    return parseObjectMethod(parser);
+  }
+};
+const parseGetter = parser => {
+  parser.eat(); // eat accessor
+  const propertyName = parseIdentifierExpression(parser);
+  parser.expect('(');
+  parser.expect(')');
+  const value = FunctionExpression({
+    id: null,
+    params: [],
+    generator: false,
+    async: false,
+    body: parseBlockStatement(parser)
+  });
+  return {
+    kind: 'get',
+    key: propertyName,
+    value
+  };
+};
+const parseSetter = parser => {
+  parser.eat(); // eat accessor
+  const propertyName = parseIdentifierExpression(parser);
+  parser.expect('(');
+  const params = [parseBindingIdentifierOrPattern(parser)];
+  parser.expect(')');
+  const value = FunctionExpression({
+    id: null,
+    params,
+    generator: false,
+    async: false,
+    body: parseBlockStatement(parser)
+  });
+  return {
+    kind: 'set',
+    key: propertyName,
+    value
+  };
+};
+const parsePropertyNameProperty = parser => {
+
+};
+const parseObjectMethod = parser => {
+  const key = parseIdentifierExpression(parser);
+  parser.expect('(');
+  const params = parseFormalParameters(parser);
+  parser.expect(')');
+  const body = parseBlockStatement(parser);
+  return {
+    method:true,
+    key,
+    value:FunctionExpression({
+      params,
+      body,
+      id:null,
+      generator:false,
+      async:false
+    })
+  };
+};
+const parsePropertyDefinition = Prefix(Property, parser => {
+  const {value: nextToken} = parser.lookAhead();
+  const property = Property({
+    kind: 'init',
+    value: null,
+    computed: false,
+    shorthand: false,
+    method: false,
+  });
+
+  if (nextToken.type === categories.Identifier) { //identifier but no keyword (
+    Object.assign(property, parsePropertyFromIdentifier(parser));
+  } else {
+    Object.assign(property, parsePropertyNameProperty(parser));
+  }
+  return property;
+});
 const parsePropertyList = (parser, properties = []) => {
   const {value: nextToken} = parser.lookAhead();
   if (nextToken === parser.get('}')) {
     return properties;
   }
   if (nextToken !== parser.get(',')) {
-    properties.push(parseObjectPropertyExpression(parser));
+    properties.push(parsePropertyDefinition(parser));
   } else {
     parser.eat();
   }
   return parsePropertyList(parser, properties);
 };
-const isPropertyName = (parser, token) => token === parser.get('[') || token.type === categories.Identifier || token.type === categories.NumericLiteral || token.type === categories.StringLiteral || token.isReserved === true;
-const parseObjectPropertyExpression = Prefix(Property, parser => {
-  const {value: nextToken} = parser.lookAhead();
-  let key;
-  let kind = 'init';
-  let value = null;
-  let computed = false;
-  let shorthand = false;
-  let method = false;
-  if (isPropertyName(parser, nextToken)) {
-    if (parser.eventually('[')) {
-      computed = true;
-      key = parser.expression();
-      parser.expect(']');
-    } else {
-      key = parser.expression(20);
-    }
-    parser.expect(':');
-    value = parser.expression(parser.getInfixPrecedence(parser.get(',')));
-  }
-
-  return {
-    key,
-    value,
-    kind,
-    computed,
-    method,
-    shorthand
-  };
-});
 const parseObjectLiteralExpression = Prefix(ObjectExpression, (parser) => {
   parser.expect('{');
   const node = {
@@ -1500,7 +1850,6 @@ const parseMemberAccessExpression = Infix(MemberExpression, (parser, left, opera
   return node;
 });
 const parseUpdateExpression = Infix(UpdateExpression, (parser, left, operator) => ({
-  type: 'UpdateExpression',
   argument: left,
   operator: operator.value,
   prefix: false
@@ -1523,7 +1872,6 @@ const parseCallExpression = Infix(CallExpression, (parser, callee) => {
   parser.expect(')');
   return node;
 });
-
 const parseSequenceExpression = Infix(SequenceExpression, (parser, left) => {
   let node = left;
   const comma = parser.get(',');
@@ -1532,7 +1880,6 @@ const parseSequenceExpression = Infix(SequenceExpression, (parser, left) => {
     left.expressions.push(next);
   } else {
     node = {
-      type: 'SequenceExpression',
       expressions: [left, next]
     };
   }
@@ -1555,6 +1902,7 @@ const ECMAScriptTokenRegistry = () => {
   prefixMap.set(registry.get('typeof'), {parse: parseUnaryExpression, precedence: 16});
   prefixMap.set(registry.get('void'), {parse: parseUnaryExpression, precedence: 16});
   prefixMap.set(registry.get('delete'), {parse: parseUnaryExpression, precedence: 16});
+  prefixMap.set(registry.get('...'), {parse: parseSpreadExpression, precedence: 1});
   //update operators
   prefixMap.set(registry.get('--'), {parse: parseUpdateExpressionAsPrefix, precedence: 16});
   prefixMap.set(registry.get('++'), {parse: parseUpdateExpressionAsPrefix, precedence: 16});
@@ -1568,6 +1916,8 @@ const ECMAScriptTokenRegistry = () => {
   prefixMap.set(registry.get('null'), {parse: parseLiteralExpression, precedence: -1});
   prefixMap.set(registry.get('false'), {parse: parseLiteralExpression, precedence: -1});
   prefixMap.set(registry.get('true'), {parse: parseLiteralExpression, precedence: -1});
+  prefixMap.set(categories.Template, {parse: undefined, precedence: -1});
+  prefixMap.set(categories.TemplateHead, {parse: undefined, precedence: -1});
   prefixMap.set(registry.get('['), {parse: parseArrayLiteralExpression, precedence: -1});
   prefixMap.set(registry.get('{'), {parse: parseObjectLiteralExpression, precedence: -1});
   //identifiers
@@ -1638,23 +1988,23 @@ const ECMAScriptTokenRegistry = () => {
    */
 
   const statementsMap = new Map();
-  statementsMap.set(registry.get('if'),parseIfStatement);
-  statementsMap.set(registry.get(';'),parseEmptyStatement);
-  statementsMap.set(registry.get('{'),parseBlockStatement);
-  statementsMap.set(registry.get('for'),parseForStatement);
-  statementsMap.set(registry.get('var'),withEventualSemiColon(parseVariableDeclaration));
-  statementsMap.set(registry.get('function'),parseFunctionDeclaration);
-  statementsMap.set(registry.get('return'),withEventualSemiColon(parseReturnStatement));
-  statementsMap.set(registry.get('break'),withEventualSemiColon(parseBreakStatement));
-  statementsMap.set(registry.get('continue'),withEventualSemiColon(parseContinueStatement));
-  statementsMap.set(registry.get('throw'),withEventualSemiColon(parseThrowStatement));
-  statementsMap.set(registry.get('while'),withEventualSemiColon(parseWhileStatement));
-  statementsMap.set(registry.get('do'),withEventualSemiColon(parseDoWhileStatement));
-  statementsMap.set(registry.get('try'),parseTryStatement);
-  statementsMap.set(registry.get('switch'),parseSwitchStatement);
-  statementsMap.set(registry.get('with'),parseWithStatement);
-  statementsMap.set(registry.get('debugger'),withEventualSemiColon(parseDebuggerStatement));
-  statementsMap.set(categories.Identifier,parseExpressionOrLabeledStatement);
+  statementsMap.set(registry.get('if'), parseIfStatement);
+  statementsMap.set(registry.get(';'), parseEmptyStatement);
+  statementsMap.set(registry.get('{'), parseBlockStatement);
+  statementsMap.set(registry.get('for'), parseForStatement);
+  statementsMap.set(registry.get('var'), withEventualSemiColon(parseVariableDeclaration));
+  statementsMap.set(registry.get('function'), parseFunctionDeclaration);
+  statementsMap.set(registry.get('return'), withEventualSemiColon(parseReturnStatement));
+  statementsMap.set(registry.get('break'), withEventualSemiColon(parseBreakStatement));
+  statementsMap.set(registry.get('continue'), withEventualSemiColon(parseContinueStatement));
+  statementsMap.set(registry.get('throw'), withEventualSemiColon(parseThrowStatement));
+  statementsMap.set(registry.get('while'), withEventualSemiColon(parseWhileStatement));
+  statementsMap.set(registry.get('do'), withEventualSemiColon(parseDoWhileStatement));
+  statementsMap.set(registry.get('try'), parseTryStatement);
+  statementsMap.set(registry.get('switch'), parseSwitchStatement);
+  statementsMap.set(registry.get('with'), parseWithStatement);
+  statementsMap.set(registry.get('debugger'), withEventualSemiColon(parseDebuggerStatement));
+  statementsMap.set(categories.Identifier, parseExpressionOrLabeledStatement);
 
   return Object.assign(registry, {
     getInfix (token) {
@@ -1737,7 +2087,7 @@ const tokenStream = ({scanner: scanner$$1, tokenRegistry, filter, evaluate}) => 
         number -= 1;
         return number < 1 ? n : this.eat(number);
       }
-    }, stream, 'allowRegexp', 'disallowRegexp');
+    }, stream, 'allowRegexp', 'disallowRegexp', 'allowRightBrace', 'disallowRightBrace');
   };
 };
 
@@ -1831,7 +2181,7 @@ const parserFactory = (tokens = defaultRegistry$1) => {
   const getPrefixPrecedence = operator => tokens.hasPrefix(operator) ? tokens.getPrefix(operator).precedence : -1;
 
   const parseInfix = (parser, left, precedence, exits) => {
-    parser.disallowRegexp();
+    parser.disallowRegexp(); //regexp as a literal is a "prefix operator" so a "/" in infix position is a div punctuator
     const {value: operator} = parser.lookAhead();
     if (!operator || precedence >= getInfixPrecedence(operator) || exits.includes(operator.type)) {
       return left;
@@ -1843,25 +2193,24 @@ const parserFactory = (tokens = defaultRegistry$1) => {
   };
 
   return code => {
-
     const tokenStream = stream(code);
-
     const parser = Object.assign(forwardArrityOne({
         expect: symbol => tokenStream.expect(tokens.get(symbol)), //more convenient to have it from the symbol
         eventually: symbol => tokenStream.eventually(tokens.get(symbol)), //more convenient to have it from the symbol
         getInfixPrecedence,
         getPrefixPrecedence,
         expression (precedence = -1, exits = []) {
-          parser.allowRegexp();
+          parser.allowRegexp(); //regexp as literal is a "prefix operator"
           const {value: token} = parser.lookAhead();
           if (!tokens.hasPrefix(token)) {
             if (token.isReserved === true) { // reserved words are allowed as identifier names (such in member expressions)
               parser.eat();
-              return {type: 'Identifier', name: token.value};
+              return Identifier({name: token.value});
             }
             return null;
           }
           const left = tokens.getPrefix(token).parse(parser);
+
           return parseInfix(parser, left, precedence, exits);
         },
         program () {
@@ -1872,7 +2221,7 @@ const parserFactory = (tokens = defaultRegistry$1) => {
         module () {
           throw new Error('not implemented');
         },
-      }, tokenStream, 'lookAhead', 'next', 'eat', 'allowRegexp', 'disallowRegexp'),
+      }, tokenStream, 'lookAhead', 'next', 'eat', 'allowRegexp', 'disallowRegexp', 'allowRightBrace', 'disallowRightBrace'),
       tokens);
 
     return parser;
@@ -4186,6 +4535,162 @@ var object = plan()
         "shorthand": false
       }]
     });
+  })
+  .only('parse expression {get test(){}}', t => {
+    t.deepEqual(parse('{get test(){}}'), {
+      type: 'ObjectExpression',
+      properties:
+        [{
+          type: 'Property',
+          key: {type: 'Identifier', name: 'test'},
+          value:
+            {
+              type: 'FunctionExpression',
+              id: null,
+              params: [],
+              body: {type: 'BlockStatement', body: []},
+              generator: false,
+              async: false
+            },
+          kind: 'get',
+          computed: false,
+          method: false,
+          shorthand: false
+        }]
+    });
+  })
+  .only('parse expression {set test(val){}}', t => {
+    t.deepEqual(parse('{set test(val){}}'), {
+      type: 'ObjectExpression',
+      properties:
+        [{
+          type: 'Property',
+          key: {type: 'Identifier', name: 'test'},
+          value:
+            {
+              type: 'FunctionExpression',
+              id: null,
+              params: [{type: 'Identifier', name: 'val'}],
+              body: {type: 'BlockStatement', body: []},
+              generator: false,
+              async: false
+            },
+          kind: 'set',
+          computed: false,
+          method: false,
+          shorthand: false
+        }]
+    });
+  })
+  .only('parse expression{test(){}}', t => {
+    t.deepEqual(parse('{test(){}}'), {
+      type: 'ObjectExpression',
+      properties:
+        [{
+          type: 'Property',
+          key: {type: 'Identifier', name: 'test'},
+          value:
+            {
+              type: 'FunctionExpression',
+              id: null,
+              params: [],
+              body: {type: 'BlockStatement', body: []},
+              generator: false,
+              async: false
+            },
+          kind: 'init',
+          computed: false,
+          method: true,
+          shorthand: false
+        }]
+    });
+  })
+  .only('parse expression{test(foo){}}', t => {
+    t.deepEqual(parse('{test(foo){}}'), {
+      type: 'ObjectExpression',
+      properties:
+        [{
+          type: 'Property',
+          key: {type: 'Identifier', name: 'test'},
+          value:
+            {
+              type: 'FunctionExpression',
+              id: null,
+              params: [{type: 'Identifier', name: 'foo'}],
+              body: {type: 'BlockStatement', body: []},
+              generator: false,
+              async: false
+            },
+          kind: 'init',
+          computed: false,
+          method: true,
+          shorthand: false
+        }]
+    });
+  })
+  .only('parse expression{test(foo, bar){}}', t => {
+    t.deepEqual(parse('{test(foo, bar){}}'), {
+      type: 'ObjectExpression',
+      properties:
+        [{
+          type: 'Property',
+          key: {type: 'Identifier', name: 'test'},
+          value:
+            {
+              type: 'FunctionExpression',
+              id: null,
+              params:
+                [{type: 'Identifier', name: 'foo'},
+                  {type: 'Identifier', name: 'bar'}],
+              body: {type: 'BlockStatement', body: []},
+              generator: false,
+              async: false
+            },
+          kind: 'init',
+          computed: false,
+          method: true,
+          shorthand: false
+        }]
+    });
+  })
+  .test('parse expression{b}', t => {
+    t.deepEqual(parse('{b}'), {
+      type: 'ObjectExpression',
+      properties:
+        [{
+          type: 'Property',
+          key: {type: 'Identifier', name: 'b'},
+          value: {type: 'Identifier', name: 'b'},
+          kind: 'init',
+          computed: false,
+          method: false,
+          shorthand: true
+        }]
+    });
+  })
+  .test('parse expression{b, c}', t => {
+    t.deepEqual(parse('{b, c}'), {
+      type: 'ObjectExpression',
+      properties:
+        [{
+          type: 'Property',
+          key: {type: 'Identifier', name: 'b'},
+          value: {type: 'Identifier', name: 'b'},
+          kind: 'init',
+          computed: false,
+          method: false,
+          shorthand: true
+        },
+          {
+            type: 'Property',
+            key: {type: 'Identifier', name: 'c'},
+            value: {type: 'Identifier', name: 'c'},
+            kind: 'init',
+            computed: false,
+            method: false,
+            shorthand: true
+          }]
+    });
   });
 
 var array = plan()
@@ -4268,6 +4773,52 @@ var array = plan()
               [{type: 'Identifier', name: 'c'},
                 null,
                 {type: 'Identifier', name: 'd'}]
+          }]
+    });
+  })
+  .test('parse [,...b]', t => {
+    t.deepEqual(parse('[,...b]'), {
+      type: 'ArrayExpression',
+      elements:
+        [null,
+          {
+            type: 'SpreadElement',
+            argument: {type: 'Identifier', name: 'b'}
+          }]
+    });
+  })
+  .test('parse [...b]', t => {
+    t.deepEqual(parse('[...b]'), {
+      type: 'ArrayExpression',
+      elements:
+        [{
+          type: 'SpreadElement',
+          argument: {type: 'Identifier', name: 'b'}
+        }]
+    });
+  })
+  .test('parse [b,...c]', t => {
+    t.deepEqual(parse('[b,...c]'), {
+      type: 'ArrayExpression',
+      elements:
+        [{type: 'Identifier', name: 'b'},
+          {
+            type: 'SpreadElement',
+            argument: {type: 'Identifier', name: 'c'}
+          }]
+    });
+  })
+  .test('parse [...b,...c]', t => {
+    t.deepEqual(parse('[...b,...c]'), {
+      type: 'ArrayExpression',
+      elements:
+        [{
+          type: 'SpreadElement',
+          argument: {type: 'Identifier', name: 'b'}
+        },
+          {
+            type: 'SpreadElement',
+            argument: {type: 'Identifier', name: 'c'}
           }]
     });
   });
@@ -5996,6 +6547,1324 @@ var tryCatch = plan()
     }]);
   });
 
+var destructuring = plan()
+  .test('parse var [,a] = b', t => {
+    t.deepEqual(parse$1('var [,a] = b').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'b'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements: [null, {type: 'Identifier', name: 'a'}]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [,,a] = b', t => {
+    t.deepEqual(parse$1('var [,,a] = b').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'b'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements: [null, null, {type: 'Identifier', name: 'a'}]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [,,a,] = b', t => {
+    t.deepEqual(parse$1('var [,,a,] = b').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'b'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements: [null, null, {type: 'Identifier', name: 'a'}]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [,,a,,,] = b', t => {
+    t.deepEqual(parse$1('var [,,a,,,] = b').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'b'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements: [null, null, {type: 'Identifier', name: 'a'}, null, null]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [a,] = b', t => {
+    t.deepEqual(parse$1('var [a,] = b').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'b'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements: [{type: 'Identifier', name: 'a'}]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [a,,] = b', t => {
+    t.deepEqual(parse$1('var [a,,] = b').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'b'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements: [{type: 'Identifier', name: 'a'}, null]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [,...a]=b', t => {
+    t.deepEqual(parse$1('var [,...a]=b').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'b'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [null,
+                  {
+                    type: 'RestElement',
+                    argument: {type: 'Identifier', name: 'a'}
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [,,...a]=b', t => {
+    t.deepEqual(parse$1('var [,,...a]=b').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'b'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [null,
+                  null,
+                  {
+                    type: 'RestElement',
+                    argument: {type: 'Identifier', name: 'a'}
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [a,,...b]=c', t => {
+    t.deepEqual(parse$1('var [a,,...b]=c').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'c'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{type: 'Identifier', name: 'a'},
+                  null,
+                  {
+                    type: 'RestElement',
+                    argument: {type: 'Identifier', name: 'b'}
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [a,b,...b]=c', t => {
+    t.deepEqual(parse$1('var [a,b,...b]=c').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'c'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{type: 'Identifier', name: 'a'},
+                  {type: 'Identifier', name: 'b'},
+                  {
+                    type: 'RestElement',
+                    argument: {type: 'Identifier', name: 'b'}
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [a,b,,...b]=c', t => {
+    t.deepEqual(parse$1('var [a,b,,...b]=c').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'c'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{type: 'Identifier', name: 'a'},
+                  {type: 'Identifier', name: 'b'},
+                  null,
+                  {
+                    type: 'RestElement',
+                    argument: {type: 'Identifier', name: 'b'}
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [a,b,,,...b]=c', t => {
+    t.deepEqual(parse$1('var [a,b,,,...b]=c').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'c'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{type: 'Identifier', name: 'a'},
+                  {type: 'Identifier', name: 'b'},
+                  null,
+                  null,
+                  {
+                    type: 'RestElement',
+                    argument: {type: 'Identifier', name: 'b'}
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [a,,,...b]=c', t => {
+    t.deepEqual(parse$1('var [a,,,...b]=c').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'c'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{type: 'Identifier', name: 'a'},
+                  null,
+                  null,
+                  {
+                    type: 'RestElement',
+                    argument: {type: 'Identifier', name: 'b'}
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [a] = b', t => {
+    t.deepEqual(parse$1('var [a] = b').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'b'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements: [{type: 'Identifier', name: 'a'}]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [a,b] = c', t => {
+    t.deepEqual(parse$1('var [a,b] = c').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'c'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{type: 'Identifier', name: 'a'},
+                  {type: 'Identifier', name: 'b'}]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [a,b,c] = d', t => {
+    t.deepEqual(parse$1('var [a,b,c] = d').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'd'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{type: 'Identifier', name: 'a'},
+                  {type: 'Identifier', name: 'b'},
+                  {type: 'Identifier', name: 'c'}]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [a,b,,c] = d', t => {
+    t.deepEqual(parse$1('var [a,b,,c] = d').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'd'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{type: 'Identifier', name: 'a'},
+                  {type: 'Identifier', name: 'b'},
+                  null,
+                  {type: 'Identifier', name: 'c'}]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [a,b,,,c] = d', t => {
+    t.deepEqual(parse$1('var [a,b,,,c] = d').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'd'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{type: 'Identifier', name: 'a'},
+                  {type: 'Identifier', name: 'b'},
+                  null,
+                  null,
+                  {type: 'Identifier', name: 'c'}]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [a,,c] = d', t => {
+    t.deepEqual(parse$1('var [a,,c] = d').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'd'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{type: 'Identifier', name: 'a'},
+                  null,
+                  {type: 'Identifier', name: 'c'}]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [a,,,c] = d', t => {
+    t.deepEqual(parse$1('var [a,,,c] = d').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'd'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{type: 'Identifier', name: 'a'},
+                  null,
+                  null,
+                  {type: 'Identifier', name: 'c'}]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a} = b', t => {
+    t.deepEqual(parse$1('var {a} = b').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'b'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value: {type: 'Identifier', name: 'a'},
+                  method: false,
+                  shorthand: true
+                }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {[a]:c} = b', t => {
+    t.deepEqual(parse$1('var {[a]:c} = b').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'b'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: true,
+                  value: {type: 'Identifier', name: 'c'},
+                  method: false,
+                  shorthand: false
+                }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a,} = b', t => {
+    t.deepEqual(parse$1('var {a,} = b').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'b'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value: {type: 'Identifier', name: 'a'},
+                  method: false,
+                  shorthand: true
+                }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a, b} = c', t => {
+    t.deepEqual(parse$1('var {a, b} = c').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'c'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value: {type: 'Identifier', name: 'a'},
+                  method: false,
+                  shorthand: true
+                },
+                  {
+                    type: 'Property',
+                    kind: 'init',
+                    key: {type: 'Identifier', name: 'b'},
+                    computed: false,
+                    value: {type: 'Identifier', name: 'b'},
+                    method: false,
+                    shorthand: true
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a, b, c} = d', t => {
+    t.deepEqual(parse$1('var {a, b, c} = d').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'd'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value: {type: 'Identifier', name: 'a'},
+                  method: false,
+                  shorthand: true
+                },
+                  {
+                    type: 'Property',
+                    kind: 'init',
+                    key: {type: 'Identifier', name: 'b'},
+                    computed: false,
+                    value: {type: 'Identifier', name: 'b'},
+                    method: false,
+                    shorthand: true
+                  },
+                  {
+                    type: 'Property',
+                    kind: 'init',
+                    key: {type: 'Identifier', name: 'c'},
+                    computed: false,
+                    value: {type: 'Identifier', name: 'c'},
+                    method: false,
+                    shorthand: true
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a:b} = c', t => {
+    t.deepEqual(parse$1('var {a:b} = c').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'c'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value: {type: 'Identifier', name: 'b'},
+                  method: false,
+                  shorthand: false
+                }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a:b, c} = d', t => {
+    t.deepEqual(parse$1('var {a:b, c} = d').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'd'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value: {type: 'Identifier', name: 'b'},
+                  method: false,
+                  shorthand: false
+                },
+                  {
+                    type: 'Property',
+                    kind: 'init',
+                    key: {type: 'Identifier', name: 'c'},
+                    computed: false,
+                    value: {type: 'Identifier', name: 'c'},
+                    method: false,
+                    shorthand: true
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a:b, c:d} = e', t => {
+    t.deepEqual(parse$1('var {a:b, c:d} = e').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'e'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value: {type: 'Identifier', name: 'b'},
+                  method: false,
+                  shorthand: false
+                },
+                  {
+                    type: 'Property',
+                    kind: 'init',
+                    key: {type: 'Identifier', name: 'c'},
+                    computed: false,
+                    value: {type: 'Identifier', name: 'd'},
+                    method: false,
+                    shorthand: false
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a:{b}} = c', t => {
+    t.deepEqual(parse$1('var {a:{b}} = c').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'c'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value:
+                    {
+                      type: 'ObjectPattern',
+                      properties:
+                        [{
+                          type: 'Property',
+                          kind: 'init',
+                          key: {type: 'Identifier', name: 'b'},
+                          computed: false,
+                          value: {type: 'Identifier', name: 'b'},
+                          method: false,
+                          shorthand: true
+                        }]
+                    },
+                  method: false,
+                  shorthand: false
+                }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a:{b},c} = e', t => {
+    t.deepEqual(parse$1('var {a:{b},c} = e').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'e'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value:
+                    {
+                      type: 'ObjectPattern',
+                      properties:
+                        [{
+                          type: 'Property',
+                          kind: 'init',
+                          key: {type: 'Identifier', name: 'b'},
+                          computed: false,
+                          value: {type: 'Identifier', name: 'b'},
+                          method: false,
+                          shorthand: true
+                        }]
+                    },
+                  method: false,
+                  shorthand: false
+                },
+                  {
+                    type: 'Property',
+                    kind: 'init',
+                    key: {type: 'Identifier', name: 'c'},
+                    computed: false,
+                    value: {type: 'Identifier', name: 'c'},
+                    method: false,
+                    shorthand: true
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a:{b},c:{d}} = e', t => {
+    t.deepEqual(parse$1('var {a:{b},c:{d}} = e').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'e'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value:
+                    {
+                      type: 'ObjectPattern',
+                      properties:
+                        [{
+                          type: 'Property',
+                          kind: 'init',
+                          key: {type: 'Identifier', name: 'b'},
+                          computed: false,
+                          value: {type: 'Identifier', name: 'b'},
+                          method: false,
+                          shorthand: true
+                        }]
+                    },
+                  method: false,
+                  shorthand: false
+                },
+                  {
+                    type: 'Property',
+                    kind: 'init',
+                    key: {type: 'Identifier', name: 'c'},
+                    computed: false,
+                    value:
+                      {
+                        type: 'ObjectPattern',
+                        properties:
+                          [{
+                            type: 'Property',
+                            kind: 'init',
+                            key: {type: 'Identifier', name: 'd'},
+                            computed: false,
+                            value: {type: 'Identifier', name: 'd'},
+                            method: false,
+                            shorthand: true
+                          }]
+                      },
+                    method: false,
+                    shorthand: false
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a:{b:c},d:{e}} = e', t => {
+    t.deepEqual(parse$1('var {a:{b:c},d:{e}} = e').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'e'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value:
+                    {
+                      type: 'ObjectPattern',
+                      properties:
+                        [{
+                          type: 'Property',
+                          kind: 'init',
+                          key: {type: 'Identifier', name: 'b'},
+                          computed: false,
+                          value: {type: 'Identifier', name: 'c'},
+                          method: false,
+                          shorthand: false
+                        }]
+                    },
+                  method: false,
+                  shorthand: false
+                },
+                  {
+                    type: 'Property',
+                    kind: 'init',
+                    key: {type: 'Identifier', name: 'd'},
+                    computed: false,
+                    value:
+                      {
+                        type: 'ObjectPattern',
+                        properties:
+                          [{
+                            type: 'Property',
+                            kind: 'init',
+                            key: {type: 'Identifier', name: 'e'},
+                            computed: false,
+                            value: {type: 'Identifier', name: 'e'},
+                            method: false,
+                            shorthand: true
+                          }]
+                      },
+                    method: false,
+                    shorthand: false
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a:[{g},c]} = d', t => {
+    t.deepEqual(parse$1('var {a:[{g},c]} = d').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'd'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value:
+                    {
+                      type: 'ArrayPattern',
+                      elements:
+                        [{
+                          type: 'ObjectPattern',
+                          properties:
+                            [{
+                              type: 'Property',
+                              kind: 'init',
+                              key: {type: 'Identifier', name: 'g'},
+                              computed: false,
+                              value: {type: 'Identifier', name: 'g'},
+                              method: false,
+                              shorthand: true
+                            }]
+                        },
+                          {type: 'Identifier', name: 'c'}]
+                    },
+                  method: false,
+                  shorthand: false
+                }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a:[g,c]} = d', t => {
+    t.deepEqual(parse$1('var {a:[g,c]} = d').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'd'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value:
+                    {
+                      type: 'ArrayPattern',
+                      elements:
+                        [{type: 'Identifier', name: 'g'},
+                          {type: 'Identifier', name: 'c'}]
+                    },
+                  method: false,
+                  shorthand: false
+                }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [{a:[b]}] = c', t => {
+    t.deepEqual(parse$1('var [{a:[b]}] = c').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'c'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{
+                  type: 'ObjectPattern',
+                  properties:
+                    [{
+                      type: 'Property',
+                      kind: 'init',
+                      key: {type: 'Identifier', name: 'a'},
+                      computed: false,
+                      value:
+                        {
+                          type: 'ArrayPattern',
+                          elements: [{type: 'Identifier', name: 'b'}]
+                        },
+                      method: false,
+                      shorthand: false
+                    }]
+                }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a=5} = b', t => {
+    t.deepEqual(parse$1('var {a=5} = b').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'b'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value:
+                    {
+                      type: 'AssignmentPattern',
+                      left: {type: 'Identifier', name: 'a'},
+                      right: {type: 'Literal', value: 5}
+                    },
+                  method: false,
+                  shorthand: true
+                }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a=5, b=foo} = c', t => {
+    t.deepEqual(parse$1('var {a=5, b=foo} = c').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'c'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value:
+                    {
+                      type: 'AssignmentPattern',
+                      left: {type: 'Identifier', name: 'a'},
+                      right: {type: 'Literal', value: 5}
+                    },
+                  method: false,
+                  shorthand: true
+                },
+                  {
+                    type: 'Property',
+                    kind: 'init',
+                    key: {type: 'Identifier', name: 'b'},
+                    computed: false,
+                    value:
+                      {
+                        type: 'AssignmentPattern',
+                        left: {type: 'Identifier', name: 'b'},
+                        right: {type: 'Identifier', name: 'foo'}
+                      },
+                    method: false,
+                    shorthand: true
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a=5, b} = c', t => {
+    t.deepEqual(parse$1('var {a=5, b} = c').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'c'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value:
+                    {
+                      type: 'AssignmentPattern',
+                      left: {type: 'Identifier', name: 'a'},
+                      right: {type: 'Literal', value: 5}
+                    },
+                  method: false,
+                  shorthand: true
+                },
+                  {
+                    type: 'Property',
+                    kind: 'init',
+                    key: {type: 'Identifier', name: 'b'},
+                    computed: false,
+                    value: {type: 'Identifier', name: 'b'},
+                    method: false,
+                    shorthand: true
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a:aa = 5, b} = c', t => {
+    t.deepEqual(parse$1('var {a:aa = 5, b} = c').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'c'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value:
+                    {
+                      type: 'AssignmentPattern',
+                      left: {type: 'Identifier', name: 'aa'},
+                      right: {type: 'Literal', value: 5}
+                    },
+                  method: false,
+                  shorthand: false
+                },
+                  {
+                    type: 'Property',
+                    kind: 'init',
+                    key: {type: 'Identifier', name: 'b'},
+                    computed: false,
+                    value: {type: 'Identifier', name: 'b'},
+                    method: false,
+                    shorthand: true
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a:aa = 5, b:bb=foo} = c', t => {
+    t.deepEqual(parse$1('var {a:aa = 5, b:bb=foo} = c').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'c'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value:
+                    {
+                      type: 'AssignmentPattern',
+                      left: {type: 'Identifier', name: 'aa'},
+                      right: {type: 'Literal', value: 5}
+                    },
+                  method: false,
+                  shorthand: false
+                },
+                  {
+                    type: 'Property',
+                    kind: 'init',
+                    key: {type: 'Identifier', name: 'b'},
+                    computed: false,
+                    value:
+                      {
+                        type: 'AssignmentPattern',
+                        left: {type: 'Identifier', name: 'bb'},
+                        right: {type: 'Identifier', name: 'foo'}
+                      },
+                    method: false,
+                    shorthand: false
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var {a:{b:bb = 5}, b:{bb:asb = foo}} = c', t => {
+    t.deepEqual(parse$1('var {a:{b:bb = 5}, b:{bb:asb = foo}} = c').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'c'},
+          id:
+            {
+              type: 'ObjectPattern',
+              properties:
+                [{
+                  type: 'Property',
+                  kind: 'init',
+                  key: {type: 'Identifier', name: 'a'},
+                  computed: false,
+                  value:
+                    {
+                      type: 'ObjectPattern',
+                      properties:
+                        [{
+                          type: 'Property',
+                          kind: 'init',
+                          key: {type: 'Identifier', name: 'b'},
+                          computed: false,
+                          value:
+                            {
+                              type: 'AssignmentPattern',
+                              left: {type: 'Identifier', name: 'bb'},
+                              right: {type: 'Literal', value: 5}
+                            },
+                          method: false,
+                          shorthand: false
+                        }]
+                    },
+                  method: false,
+                  shorthand: false
+                },
+                  {
+                    type: 'Property',
+                    kind: 'init',
+                    key: {type: 'Identifier', name: 'b'},
+                    computed: false,
+                    value:
+                      {
+                        type: 'ObjectPattern',
+                        properties:
+                          [{
+                            type: 'Property',
+                            kind: 'init',
+                            key: {type: 'Identifier', name: 'bb'},
+                            computed: false,
+                            value:
+                              {
+                                type: 'AssignmentPattern',
+                                left: {type: 'Identifier', name: 'asb'},
+                                right: {type: 'Identifier', name: 'foo'}
+                              },
+                            method: false,
+                            shorthand: false
+                          }]
+                      },
+                    method: false,
+                    shorthand: false
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [a=b] = c', t => {
+    t.deepEqual(parse$1('var [a=b] = c').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'c'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{
+                  type: 'AssignmentPattern',
+                  left: {type: 'Identifier', name: 'a'},
+                  right: {type: 'Identifier', name: 'b'}
+                }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [a=b,c =d] = e', t => {
+    t.deepEqual(parse$1('var [a=b,c =d] = e').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'e'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{
+                  type: 'AssignmentPattern',
+                  left: {type: 'Identifier', name: 'a'},
+                  right: {type: 'Identifier', name: 'b'}
+                },
+                  {
+                    type: 'AssignmentPattern',
+                    left: {type: 'Identifier', name: 'c'},
+                    right: {type: 'Identifier', name: 'd'}
+                  }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [[a=b]] = c', t => {
+    t.deepEqual(parse$1('var [[a=b]] = c').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'c'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{
+                  type: 'ArrayPattern',
+                  elements:
+                    [{
+                      type: 'AssignmentPattern',
+                      left: {type: 'Identifier', name: 'a'},
+                      right: {type: 'Identifier', name: 'b'}
+                    }]
+                }]
+            }
+        }],
+      kind: 'var'
+    }]);
+  })
+  .test('parse var [{a=b},c] = d', t => {
+    t.deepEqual(parse$1('var [{a=b},c] = d').body, [{
+      type: 'VariableDeclaration',
+      declarations:
+        [{
+          type: 'VariableDeclarator',
+          init: {type: 'Identifier', name: 'd'},
+          id:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{
+                  type: 'ObjectPattern',
+                  properties:
+                    [{
+                      type: 'Property',
+                      kind: 'init',
+                      key: {type: 'Identifier', name: 'a'},
+                      computed: false,
+                      value:
+                        {
+                          type: 'AssignmentPattern',
+                          left: {type: 'Identifier', name: 'a'},
+                          right: {type: 'Identifier', name: 'b'}
+                        },
+                      method: false,
+                      shorthand: true
+                    }]
+                },
+                  {type: 'Identifier', name: 'c'}]
+            }
+        }],
+      kind: 'var'
+    }]);
+  });
+
 var statements = plan()
   .test(empty)
   .test(ifStatements)
@@ -6013,7 +7882,8 @@ var statements = plan()
   .test(continueStatements)
   .test(withStatements)
   .test(throwStatements)
-  .test(tryCatch);
+  .test(tryCatch)
+  .test(destructuring);
 
 plan()
   .test(tokens)

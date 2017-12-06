@@ -8,7 +8,7 @@ export const sourceStream = (code) => {
   const test = (regexp) => nextStretch().search(regexp) === 0;
   const nextSubStr = (count = 1) => code.substr(index, count);
   const seeNextAt = (offset = 0) => code[index + offset];
-  const nextStretch = () => nextSubStr(3); //we need three chars to be really sure of the current lexical production
+  const nextStretch = () => nextSubStr(3); //we need three chars to be really sure of the current lexical production (0x3...)
   const loc = () => ({col, line});
 
   const advance = (number = 1) => {

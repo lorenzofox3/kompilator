@@ -26,18 +26,17 @@ export const puncutators = `{ ( ) [ ] . ... ; , < > <= >= == != === !== + - * % 
 export const allowRegexpAfter = 'case delete do else in instanceof new return throw typeof void { ( [ . ; , < > <= >= == != === !== + - * << >> >>> & | ^ ! ~ && || ? : = += -= *= %= <<= >>= >>>= &= |= ^= /='.split(' ');
 
 const createLanguageToken = (symbol, value) => {
-  const token = Object.create(null, {
+  return Object.freeze(Object.assign(Object.create(null, {
     type: {
       get () {
         return this; //type is an alias to itself (so we can use in Maps as we would to for other categories such literals, etc)
       }
-    },
-    value: {value: value !== void 0 ? value : symbol},
-    rawValue: {value: symbol, enumerable: true},
-    isReserved: {value: reservedKeywords.includes(symbol), enumerable: true}
-  });
-
-  return Object.freeze(token);
+    }
+  }), {
+    value: value !== void  0 ? value : symbol,
+    rawValue: symbol,
+    isReserved: reservedKeywords.includes(symbol)
+  }));
 };
 
 //create a token table
@@ -60,14 +59,15 @@ export const tokenRegistry = () => {
         switch (lexeme.type) {
           case categories.StringLiteral:
             return Object.assign(lexeme, {
-              value: lexeme.rawValue.substr(1, lexeme.rawValue.length - 2)
+              value: lexeme.rawValue.substr(1, lexeme.rawValue.length - 2),
+              isReserved: false
             });
           case categories.NumericLiteral:
-            return Object.assign(lexeme, {value: Number(lexeme.rawValue)});
+            return Object.assign(lexeme, {value: Number(lexeme.rawValue), isReserved: false});
           case categories.RegularExpressionLiteral:
-            return Object.assign(lexeme, {value: new RegExp(lexeme.pattern, lexeme.flags)});
+            return Object.assign(lexeme, {isReserved: false, value: new RegExp(lexeme.pattern, lexeme.flags)});
           default:
-            return Object.assign(lexeme, {value: lexeme.rawValue});
+            return Object.assign(lexeme, {isReserved: false, value: lexeme.rawValue});
         }
       }
       return tokenMap.get(lexeme.rawValue);

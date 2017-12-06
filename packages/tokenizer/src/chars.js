@@ -9,3 +9,7 @@ export const CHAR_LEFT_BRACKET = '[';
 export const CHAR_RIGHT_BRACKET = ']';
 export const CHAR_DOT = '.';
 export const SPREAD = '...';
+export const CHAR_TEMPLATE_QUOTE = '`';
+export const CHAR_DOLLAR = '$';
+export const CHAR_BRACE_OPEN = '{';
+export const CHAR_BRACE_CLOSE = '}';

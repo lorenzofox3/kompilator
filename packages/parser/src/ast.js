@@ -27,6 +27,11 @@ export const NewExpression = nodeFactory('NewExpression', {
     yield* this.arguments;
   }
 });
+export const SpreadElement = nodeFactory('SpreadElement', {
+  * [Symbol.iterator] () {
+    yield this.argument;
+  }
+});
 export const ArrayExpression = nodeFactory('ArrayExpression', {
   * [Symbol.iterator] () {
     yield* this.elements;
@@ -80,15 +85,6 @@ export const SequenceExpression = nodeFactory('SequenceExpression', {
 });
 
 //statements nodes
-//todo refactoring with function expression
-export const FunctionDeclaration = nodeFactory('FunctionDeclaration', {
-  * [Symbol.iterator] () {
-    yield this.id;
-    yield* this.params;
-    yield this.body;
-  }
-});
-//todo refactoring with conditional expression
 export const IfStatement = nodeFactory('IfStatement', {
   * [Symbol.iterator] () {
     yield this.test;
@@ -165,17 +161,6 @@ export const DoWhileStatement = nodeFactory('DoWhileStatement', {
     yield this.test;
   }
 });
-export const VariableDeclarator = nodeFactory('VariableDeclarator', {
-  * [Symbol.iterator] () {
-    yield this.id;
-    yield this.init;
-  }
-});
-export const VariableDeclaration = nodeFactory('VariableDeclaration', {
-  * [Symbol.iterator] () {
-    yield* this.declarations;
-  }
-});
 export const ForInStatement = nodeFactory('ForInStatement', {
   * [Symbol.iterator] () {
     yield this.left;
@@ -201,6 +186,48 @@ export const Program = nodeFactory('Program', {
   }
 });
 
+//declarations
+export const AssignmentPattern = nodeFactory('AssignmentPattern', {
+  * [Symbol.iterator] () {
+    yield this.left;
+    yield this.right;
+  }
+});
+export const FunctionDeclaration = nodeFactory('FunctionDeclaration', {
+  * [Symbol.iterator] () {
+    yield this.id;
+    yield* this.params;
+    yield this.body;
+  }
+});
+export const VariableDeclarator = nodeFactory('VariableDeclarator', {
+  * [Symbol.iterator] () {
+    yield this.id;
+    yield this.init;
+  }
+});
+export const VariableDeclaration = nodeFactory('VariableDeclaration', {
+  * [Symbol.iterator] () {
+    yield* this.declarations;
+  }
+});
+export const ArrayPattern = nodeFactory('ArrayPattern', {
+  * [Symbol.iterator] () {
+    yield* this.elements;
+  }
+});
+export const RestElement = nodeFactory('RestElement', {
+  * [Symbol.iterator] () {
+    yield* this.argument;
+  }
+});
+export const ObjectPattern = nodeFactory('ObjectPattern', {
+  * [Symbol.iterator] () {
+    yield* this.properties;
+  }
+});
+
+
 //walk & traverse
 export function* traverse (node) {
   yield node;
@@ -211,11 +238,9 @@ export function* traverse (node) {
   }
 }
 
-
 export const visitWithAncestors = visitor => node => {
 
 };
-
 export const visit = (...visitors) => {
   const aggregatedVisitor = visitors.reduce((acc, curr) => {
     for (let nodeType of Object.keys(curr)) {
@@ -228,9 +253,11 @@ export const visit = (...visitors) => {
 
   return node => {
     for (let n of traverse(node)) {
-      if (aggregatedVisitor[n.type]) {
-        for (let vfunc of aggregatedVisitor[n.type]) {
-          vfunc(n);
+      if (n) {
+        if (aggregatedVisitor[n.type]) {
+          for (let vfunc of aggregatedVisitor[n.type]) {
+            vfunc(n);
+          }
         }
       }
     }

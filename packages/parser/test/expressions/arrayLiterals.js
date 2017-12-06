@@ -84,3 +84,49 @@ export default zora()
           }]
     });
   })
+  .test('parse [,...b]', t => {
+    t.deepEqual(parse('[,...b]'), {
+      type: 'ArrayExpression',
+      elements:
+        [null,
+          {
+            type: 'SpreadElement',
+            argument: {type: 'Identifier', name: 'b'}
+          }]
+    });
+  })
+  .test('parse [...b]', t => {
+    t.deepEqual(parse('[...b]'), {
+      type: 'ArrayExpression',
+      elements:
+        [{
+          type: 'SpreadElement',
+          argument: {type: 'Identifier', name: 'b'}
+        }]
+    });
+  })
+  .test('parse [b,...c]', t => {
+    t.deepEqual(parse('[b,...c]'), {
+      type: 'ArrayExpression',
+      elements:
+        [{type: 'Identifier', name: 'b'},
+          {
+            type: 'SpreadElement',
+            argument: {type: 'Identifier', name: 'c'}
+          }]
+    });
+  })
+  .test('parse [...b,...c]', t => {
+    t.deepEqual(parse('[...b,...c]'), {
+      type: 'ArrayExpression',
+      elements:
+        [{
+          type: 'SpreadElement',
+          argument: {type: 'Identifier', name: 'b'}
+        },
+          {
+            type: 'SpreadElement',
+            argument: {type: 'Identifier', name: 'c'}
+          }]
+    });
+  })

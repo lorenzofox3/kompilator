@@ -35,6 +35,7 @@
   },
   "dependencies": {
     "acorn": "^5.2.1",
+    "cherow": "^0.15.9",
     "http-server": "^0.10.0"
   }
 }
