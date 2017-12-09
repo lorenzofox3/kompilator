@@ -113,5 +113,56 @@ export default zora()
           {type: 'Identifier', name: 'b'},
           {type: 'Identifier', name: 'b'}]
     });
-  });
+  })
+  .test('parse f(...a)', t => {
+    t.deepEqual(parse('f(...a)'),{ type: 'CallExpression',
+      callee: { type: 'Identifier', name: 'f' },
+      arguments:
+        [ { type: 'SpreadElement',
+          argument: { type: 'Identifier', name: 'a' } } ] });
+  })
+  .test('parse f(a,...b)', t => {
+    t.deepEqual(parse('f(a,...b)'),{ type: 'CallExpression',
+      callee: { type: 'Identifier', name: 'f' },
+      arguments:
+        [ { type: 'Identifier', name: 'a' },
+          { type: 'SpreadElement',
+            argument: { type: 'Identifier', name: 'b' } } ] });
+  })
+  .test('parse f(a,...b,)', t => {
+    t.deepEqual(parse('f(a,...b,)'),{ type: 'CallExpression',
+      callee: { type: 'Identifier', name: 'f' },
+      arguments:
+        [ { type: 'Identifier', name: 'a' },
+          { type: 'SpreadElement',
+            argument: { type: 'Identifier', name: 'b' } } ] });
+  })
 
+
+/*
+const parseArrayElements = (parser, elements = []) => {
+  const {value: next} = parser.lookAhead();
+  const comma = parser.get(',');
+
+  if (next === parser.get(']')) {
+    return elements;
+  }
+
+  if (next === parser.get('...')) {
+    elements.push(parseSpreadExpression(parser));
+    parser.eventually(',');
+    return parseArrayElements(parser, elements);
+  }
+
+  if (next === comma) {
+    parseArrayElision(parser, elements);
+    return parseArrayElements(parser, elements)
+  }
+
+  elements.push(parser.expression(parser.getInfixPrecedence(comma)));
+  parser.eventually(',');
+
+  return parseArrayElements(parser, elements);
+};
+
+ */

@@ -15,6 +15,7 @@ import sequence from './sequence';
 import object from './objectLiterals';
 import array from './arrayLiterals';
 import functions from './function';
+import klass from './class';
 
 export default zora()
   .test(assignments)
@@ -33,3 +34,4 @@ export default zora()
   .test(object)
   .test(array)
   .test(functions)
+  .test(klass)

@@ -17,6 +17,9 @@ import withStatements from './with';
 import throwStatements from './throws';
 import tryCatch from './tryCatchFinally';
 import destructuring from './destructuring';
+import letDeclaration from './let';
+import constDeclaration from './const';
+import classDeclaration from './class';
 
 export default zora()
   .test(empty)
@@ -25,6 +28,8 @@ export default zora()
   .test(forStatements)
   .test(forIn)
   .test(varStatement)
+  .test(letDeclaration)
+  .test(constDeclaration)
   .test(block)
   .test(returns)
   .test(functions)
@@ -37,4 +42,5 @@ export default zora()
   .test(throwStatements)
   .test(tryCatch)
   .test(destructuring)
+  .test(classDeclaration)
 

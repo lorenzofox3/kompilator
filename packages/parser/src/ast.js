@@ -1,4 +1,7 @@
-const nodeFactory = (type, proto = null) => obj => Object.assign(Object.create(proto), {type}, obj);
+const nodeFactory = (defaultOrType, proto = null) => {
+  const defaultObj = typeof defaultOrType === 'string' ? {type: defaultOrType} : defaultOrType;
+  return obj => Object.assign(Object.create(proto), defaultObj, obj);
+};
 
 //pefix nodes
 export const UnaryExpression = nodeFactory('UnaryExpression', {
@@ -14,11 +17,16 @@ export const UpdateExpression = nodeFactory('UpdateExpression', {
     yield this.argument;
   }
 });
-export const FunctionExpression = nodeFactory('FunctionExpression', {
+export const FunctionExpression = nodeFactory({type: 'FunctionExpression', id: null, async: false, generator: false}, {
   * [Symbol.iterator] () {
     yield this.id;
     yield* this.params;
     yield this.body;
+  }
+});
+export const ClassExpression = nodeFactory('ClassExpression', {
+  * [Symbol.iterator] () {
+    yield* this.body;
   }
 });
 export const NewExpression = nodeFactory('NewExpression', {
@@ -42,7 +50,14 @@ export const ObjectExpression = nodeFactory('ObjectExpression', {
     yield* this.properties;
   }
 });
-export const Property = nodeFactory('Property', {
+export const Property = nodeFactory({
+  type: 'Property',
+  shorthand: false,
+  computed: false,
+  kind: 'init',
+  method: false,
+  value:null
+}, {
   * [Symbol.iterator] () {
     yield this.key;
     yield this.value;
@@ -174,6 +189,12 @@ export const ForStatement = nodeFactory('ForStatement', {
     yield this.update;
   }
 });
+export const ForOfStatement = nodeFactory('ForOfStatement', {
+  * [Symbol.iterator] () {
+    yield this.left;
+    yield this.right;
+  }
+});
 export const LabeledStatement = nodeFactory('LabeledStatement', {
   * [Symbol.iterator] () {
     yield this.body;
@@ -226,7 +247,25 @@ export const ObjectPattern = nodeFactory('ObjectPattern', {
     yield* this.properties;
   }
 });
-
+export const Class = nodeFactory('ClassDeclaration', {
+  * [Symbol.iterator] () {
+    yield this.id;
+    yield this.superClass;
+    yield this.body;
+  }
+});
+export const ClassBody = nodeFactory('ClassBody', {
+  * [Symbol.iterator] () {
+    yield* this.body;
+  }
+});
+export const MethodDefinition = nodeFactory('MethodDefinition', {
+  * [Symbol.iterator] () {
+    yield this.key;
+    yield this.value;
+  }
+});
+export const Super = nodeFactory('Super');
 
 //walk & traverse
 export function* traverse (node) {

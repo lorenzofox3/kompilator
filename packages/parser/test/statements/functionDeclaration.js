@@ -148,3 +148,84 @@ export default zora()
       id: {type: 'Identifier', name: 'a'}
     }]);
   })
+  .test('parse function a(...b){}', t => {
+    t.deepEqual(parse('function a(...b){}').body,[ { type: 'FunctionDeclaration',
+      params:
+        [ { type: 'RestElement',
+          argument: { type: 'Identifier', name: 'b' } } ],
+      body: { type: 'BlockStatement', body: [] },
+      async: false,
+      generator: false,
+      
+      id: { type: 'Identifier', name: 'a' } } ]);
+  })
+  .test('parse function a(aa,...b){}', t => {
+    t.deepEqual(parse('function a(aa,...b){}').body,[ { type: 'FunctionDeclaration',
+      params:
+        [ { type: 'Identifier', name: 'aa' },
+          { type: 'RestElement',
+            argument: { type: 'Identifier', name: 'b' } } ],
+      body: { type: 'BlockStatement', body: [] },
+      async: false,
+      generator: false,
+      
+      id: { type: 'Identifier', name: 'a' } } ]);
+  })
+  .test('parse function a(aa,b = c){}', t => {
+    t.deepEqual(parse('function a(aa,b = c){}').body,[ { type: 'FunctionDeclaration',
+      params:
+        [ { type: 'Identifier', name: 'aa' },
+          { type: 'AssignmentPattern',
+            left: { type: 'Identifier', name: 'b' },
+            right: { type: 'Identifier', name: 'c' } } ],
+      body: { type: 'BlockStatement', body: [] },
+      async: false,
+      generator: false,
+      
+      id: { type: 'Identifier', name: 'a' } } ]);
+  })
+  .test('parse function a(b = c){}', t => {
+    t.deepEqual(parse('function a(b = c){}').body,[ { type: 'FunctionDeclaration',
+      params:
+        [ { type: 'AssignmentPattern',
+          left: { type: 'Identifier', name: 'b' },
+          right: { type: 'Identifier', name: 'c' } } ],
+      body: { type: 'BlockStatement', body: [] },
+      async: false,
+      generator: false,
+      
+      id: { type: 'Identifier', name: 'a' } } ]);
+  })
+  .test('parse function a([a,{b:{c:d}}] = {}){}', t => {
+    t.deepEqual(parse('function a([a,{b:{c:d}}] = {}){}').body,[ { type: 'FunctionDeclaration',
+      params:
+        [ { type: 'AssignmentPattern',
+          left:
+            { type: 'ArrayPattern',
+              elements:
+                [ { type: 'Identifier', name: 'a' },
+                  { type: 'ObjectPattern',
+                    properties:
+                      [ { type: 'Property',
+                        kind: 'init',
+                        key: { type: 'Identifier', name: 'b' },
+                        computed: false,
+                        value:
+                          { type: 'ObjectPattern',
+                            properties:
+                              [ { type: 'Property',
+                                kind: 'init',
+                                key: { type: 'Identifier', name: 'c' },
+                                computed: false,
+                                value: { type: 'Identifier', name: 'd' },
+                                method: false,
+                                shorthand: false } ] },
+                        method: false,
+                        shorthand: false } ] } ] },
+          right: { type: 'ObjectExpression', properties: [] } } ],
+      body: { type: 'BlockStatement', body: [] },
+      async: false,
+      generator: false,
+      id: { type: 'Identifier', name: 'a' } } ]);
+  })
+  

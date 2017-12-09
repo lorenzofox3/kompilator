@@ -33,8 +33,8 @@ export const ECMAScriptTokenRegistry = () => {
   prefixMap.set(registry.get('null'), {parse: expressions.parseLiteralExpression, precedence: -1});
   prefixMap.set(registry.get('false'), {parse: expressions.parseLiteralExpression, precedence: -1});
   prefixMap.set(registry.get('true'), {parse: expressions.parseLiteralExpression, precedence: -1});
-  prefixMap.set(categories.Template, {parse: expressions.parseTemplateLiteral, precedence: -1});
-  prefixMap.set(categories.TemplateHead, {parse: expressions.parseTemplateLiteral, precedence: -1});
+  // prefixMap.set(categories.Template, {parse: expressions.parseTemplateLiteral, precedence: -1});
+  // prefixMap.set(categories.TemplateHead, {parse: expressions.parseTemplateLiteral, precedence: -1});
   prefixMap.set(registry.get('['), {parse: expressions.parseArrayLiteralExpression, precedence: -1});
   prefixMap.set(registry.get('{'), {parse: expressions.parseObjectLiteralExpression, precedence: -1});
   //identifiers
@@ -42,6 +42,7 @@ export const ECMAScriptTokenRegistry = () => {
   prefixMap.set(categories.Identifier, {parse: expressions.parseIdentifierExpression, precedence: -1});
   //functions
   prefixMap.set(registry.get('function'), {parse: expressions.parseFunctionExpression, precedence: -1});
+  prefixMap.set(registry.get('class'), {parse: expressions.parseClassExpression, precedence: -1});
   prefixMap.set(registry.get('new'), {parse: expressions.parseNewExpression, precedence: 18});
   //group
   prefixMap.set(registry.get('('), {parse: expressions.parseGroupExpression, precedence: 20});
@@ -110,7 +111,10 @@ export const ECMAScriptTokenRegistry = () => {
   statementsMap.set(registry.get('{'), statements.parseBlockStatement);
   statementsMap.set(registry.get('for'), statements.parseForStatement);
   statementsMap.set(registry.get('var'), withEventualSemiColon(statements.parseVariableDeclaration));
+  statementsMap.set(registry.get('const'), withEventualSemiColon(statements.parseConstDeclaration));
+  statementsMap.set(registry.get('let'), withEventualSemiColon(statements.parseLetDeclaration));
   statementsMap.set(registry.get('function'), statements.parseFunctionDeclaration);
+  statementsMap.set(registry.get('class'), statements.parseClassDeclaration);
   statementsMap.set(registry.get('return'), withEventualSemiColon(statements.parseReturnStatement));
   statementsMap.set(registry.get('break'), withEventualSemiColon(statements.parseBreakStatement));
   statementsMap.set(registry.get('continue'), withEventualSemiColon(statements.parseContinueStatement));

@@ -3,108 +3,251 @@ import {parse} from './utils';
 
 export default zora()
   .test('parse expression function (){foo++}', t => {
-    t.deepEqual(parse('function (){foo++}'),{ type: 'FunctionExpression',
+    t.deepEqual(parse('function (){foo++}'), {
+      type: 'FunctionExpression',
       params: [],
       body:
-        { type: 'BlockStatement',
+        {
+          type: 'BlockStatement',
           body:
-            [ { type: 'ExpressionStatement',
+            [{
+              type: 'ExpressionStatement',
               expression:
-                { type: 'UpdateExpression',
-                  argument: { type: 'Identifier', name: 'foo' },
+                {
+                  type: 'UpdateExpression',
+                  argument: {type: 'Identifier', name: 'foo'},
                   operator: '++',
-                  prefix: false } } ] },
+                  prefix: false
+                }
+            }]
+        },
       async: false,
       generator: false,
-      id: null });
+      id: null
+    });
   })
   .test('parse expression function a(){}', t => {
-    t.deepEqual(parse('function a(){}'),{ type: 'FunctionExpression',
+    t.deepEqual(parse('function a(){}'), {
+      type: 'FunctionExpression',
       params: [],
-      body: { type: 'BlockStatement', body: [] },
+      body: {type: 'BlockStatement', body: []},
       async: false,
       generator: false,
-      id: { type: 'Identifier', name: 'a' } });
+      id: {type: 'Identifier', name: 'a'}
+    });
   })
   .test('parse expression function (b){}', t => {
-    t.deepEqual(parse('function (b){}'),{ type: 'FunctionExpression',
-      params: [ { type: 'Identifier', name: 'b' } ],
-      body: { type: 'BlockStatement', body: [] },
+    t.deepEqual(parse('function (b){}'), {
+      type: 'FunctionExpression',
+      params: [{type: 'Identifier', name: 'b'}],
+      body: {type: 'BlockStatement', body: []},
       async: false,
       generator: false,
-      id: null });
+      id: null
+    });
   })
   .test('parse expression function a(b){foo++}', t => {
-    t.deepEqual(parse('function a(b){foo++}'),{ type: 'FunctionExpression',
-      params: [ { type: 'Identifier', name: 'b' } ],
+    t.deepEqual(parse('function a(b){foo++}'), {
+      type: 'FunctionExpression',
+      params: [{type: 'Identifier', name: 'b'}],
       body:
-        { type: 'BlockStatement',
+        {
+          type: 'BlockStatement',
           body:
-            [ { type: 'ExpressionStatement',
+            [{
+              type: 'ExpressionStatement',
               expression:
-                { type: 'UpdateExpression',
-                  argument: { type: 'Identifier', name: 'foo' },
+                {
+                  type: 'UpdateExpression',
+                  argument: {type: 'Identifier', name: 'foo'},
                   operator: '++',
-                  prefix: false } } ] },
+                  prefix: false
+                }
+            }]
+        },
       async: false,
       generator: false,
-      id: { type: 'Identifier', name: 'a' } });
+      id: {type: 'Identifier', name: 'a'}
+    });
   })
   .test('parse expression function (b,c){}', t => {
-    t.deepEqual(parse('function (b,c){}'),{ type: 'FunctionExpression',
+    t.deepEqual(parse('function (b,c){}'), {
+      type: 'FunctionExpression',
       params:
-        [ { type: 'Identifier', name: 'b' },
-          { type: 'Identifier', name: 'c' } ],
-      body: { type: 'BlockStatement', body: [] },
+        [{type: 'Identifier', name: 'b'},
+          {type: 'Identifier', name: 'c'}],
+      body: {type: 'BlockStatement', body: []},
       async: false,
       generator: false,
-      id: null });
+      id: null
+    });
   })
   .test('parse expression function a(b,c){foo++}', t => {
-    t.deepEqual(parse('function a(b,c){foo++}'),{ type: 'FunctionExpression',
+    t.deepEqual(parse('function a(b,c){foo++}'), {
+      type: 'FunctionExpression',
       params:
-        [ { type: 'Identifier', name: 'b' },
-          { type: 'Identifier', name: 'c' } ],
+        [{type: 'Identifier', name: 'b'},
+          {type: 'Identifier', name: 'c'}],
       body:
-        { type: 'BlockStatement',
+        {
+          type: 'BlockStatement',
           body:
-            [ { type: 'ExpressionStatement',
+            [{
+              type: 'ExpressionStatement',
               expression:
-                { type: 'UpdateExpression',
-                  argument: { type: 'Identifier', name: 'foo' },
+                {
+                  type: 'UpdateExpression',
+                  argument: {type: 'Identifier', name: 'foo'},
                   operator: '++',
-                  prefix: false } } ] },
+                  prefix: false
+                }
+            }]
+        },
       async: false,
       generator: false,
-      id: { type: 'Identifier', name: 'a' } });
+      id: {type: 'Identifier', name: 'a'}
+    });
   })
   .test('parse expression function (b,c,d){}', t => {
-    t.deepEqual(parse('function (b,c,d){}'),{ type: 'FunctionExpression',
+    t.deepEqual(parse('function (b,c,d){}'), {
+      type: 'FunctionExpression',
       params:
-        [ { type: 'Identifier', name: 'b' },
-          { type: 'Identifier', name: 'c' },
-          { type: 'Identifier', name: 'd' } ],
-      body: { type: 'BlockStatement', body: [] },
+        [{type: 'Identifier', name: 'b'},
+          {type: 'Identifier', name: 'c'},
+          {type: 'Identifier', name: 'd'}],
+      body: {type: 'BlockStatement', body: []},
       async: false,
       generator: false,
-      id: null });
+      id: null
+    });
   })
   .test('parse expression function a(b,c,d){foo++}', t => {
-    t.deepEqual(parse('function a(b,c,d){foo++}'),{ type: 'FunctionExpression',
+    t.deepEqual(parse('function a(b,c,d){foo++}'), {
+      type: 'FunctionExpression',
       params:
-        [ { type: 'Identifier', name: 'b' },
-          { type: 'Identifier', name: 'c' },
-          { type: 'Identifier', name: 'd' } ],
+        [{type: 'Identifier', name: 'b'},
+          {type: 'Identifier', name: 'c'},
+          {type: 'Identifier', name: 'd'}],
       body:
-        { type: 'BlockStatement',
+        {
+          type: 'BlockStatement',
           body:
-            [ { type: 'ExpressionStatement',
+            [{
+              type: 'ExpressionStatement',
               expression:
-                { type: 'UpdateExpression',
-                  argument: { type: 'Identifier', name: 'foo' },
+                {
+                  type: 'UpdateExpression',
+                  argument: {type: 'Identifier', name: 'foo'},
                   operator: '++',
-                  prefix: false } } ] },
+                  prefix: false
+                }
+            }]
+        },
       async: false,
       generator: false,
-      id: { type: 'Identifier', name: 'a' } });
+      id: {type: 'Identifier', name: 'a'}
+    });
+  })
+  .test('parse expression function (...b){}', t => {
+    t.deepEqual(parse('function (...b){}'), {
+      type: 'FunctionExpression',
+      params: [{
+        type: 'RestElement',
+        argument: {type: 'Identifier', name: 'b'}
+      }],
+      body: {type: 'BlockStatement', body: []},
+      async: false,
+      generator: false,
+      id: null
+    });
+  })
+  .test('parse expression function (aa,...b){}', t => {
+    t.deepEqual(parse('function (aa,...b){}'), {
+      type: 'FunctionExpression',
+      params:
+        [{type: 'Identifier', name: 'aa'},
+          {
+            type: 'RestElement',
+            argument: {type: 'Identifier', name: 'b'}
+          }],
+      body: {type: 'BlockStatement', body: []},
+      async: false,
+      generator: false,
+      id: null
+    });
+  })
+  .test('parse expression function (aa,b = c){}', t => {
+    t.deepEqual(parse('function (aa,b = c){}'), {
+      type: 'FunctionExpression',
+      params:
+        [{type: 'Identifier', name: 'aa'},
+          {
+            type: 'AssignmentPattern',
+            left: {type: 'Identifier', name: 'b'},
+            right: {type: 'Identifier', name: 'c'}
+          }],
+      body: {type: 'BlockStatement', body: []},
+      async: false,
+      generator: false,
+      id: null
+    });
+  })
+  .test('parse expression function (b = c){}', t => {
+    t.deepEqual(parse('function (b = c){}'), {
+      type: 'FunctionExpression',
+      params: [{
+        type: 'AssignmentPattern',
+        left: {type: 'Identifier', name: 'b'},
+        right: {type: 'Identifier', name: 'c'}
+      }],
+      body: {type: 'BlockStatement', body: []},
+      async: false,
+      generator: false,
+      id: null
+    });
+  })
+  .test('parse expression function ([a,{b:{c:d}}] = {}){}', t => {
+    t.deepEqual(parse('function ([a,{b:{c:d}}] = {}){}'), {
+      type: 'FunctionExpression',
+      params: [{
+        type: 'AssignmentPattern',
+        left:
+          {
+            type: 'ArrayPattern',
+            elements:
+              [{type: 'Identifier', name: 'a'},
+                {
+                  type: 'ObjectPattern',
+                  properties:
+                    [{
+                      type: 'Property',
+                      kind: 'init',
+                      key: {type: 'Identifier', name: 'b'},
+                      computed: false,
+                      value:
+                        {
+                          type: 'ObjectPattern',
+                          properties:
+                            [{
+                              type: 'Property',
+                              kind: 'init',
+                              key: {type: 'Identifier', name: 'c'},
+                              computed: false,
+                              value: {type: 'Identifier', name: 'd'},
+                              method: false,
+                              shorthand: false
+                            }]
+                        },
+                      method: false,
+                      shorthand: false
+                    }]
+                }]
+          },
+        right: {type: 'ObjectExpression', properties: []}
+      }],
+      body: {type: 'BlockStatement', body: []},
+      async: false,
+      generator: false,
+      id: null
+    });
   })

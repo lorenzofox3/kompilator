@@ -201,7 +201,7 @@ export default zora()
       }]
     });
   })
-  .only('parse expression {get test(){}}', t => {
+  .test('parse expression {get test(){}}', t => {
     t.deepEqual(parse('{get test(){}}'), {
       type: 'ObjectExpression',
       properties:
@@ -224,7 +224,29 @@ export default zora()
         }]
     });
   })
-  .only('parse expression {set test(val){}}', t => {
+  .test('parse expression {get: function(){}}', t => {
+    t.deepEqual(parse('{get: function(){}}'), {
+        "type": "ObjectExpression",
+        "properties": [{
+          "type": "Property",
+          "kind": "init",
+          "value": {
+            "type": "FunctionExpression",
+            "id": null,
+            "async": false,
+            "generator": false,
+            "params": [],
+            "body": {"type": "BlockStatement", "body": []}
+          },
+          "computed": false,
+          "shorthand": false,
+          "method": false,
+          "key": {"type": "Identifier", "name": "get"}
+        }]
+      }
+    );
+  })
+  .test('parse expression {set test(val){}}', t => {
     t.deepEqual(parse('{set test(val){}}'), {
       type: 'ObjectExpression',
       properties:
@@ -247,7 +269,30 @@ export default zora()
         }]
     });
   })
-  .only('parse expression{test(){}}', t => {
+  .test('parse expression {get(){}}', t => {
+    t.deepEqual(parse('{get(){}}'), {
+      type: 'ObjectExpression',
+      properties:
+        [{
+          type: 'Property',
+          key: {type: 'Identifier', name: 'get'},
+          value:
+            {
+              type: 'FunctionExpression',
+              id: null,
+              params: [],
+              body: {type: 'BlockStatement', body: []},
+              generator: false,
+              async: false
+            },
+          kind: 'init',
+          computed: false,
+          method: true,
+          shorthand: false
+        }]
+    });
+  })
+  .test('parse expression {test(){}}', t => {
     t.deepEqual(parse('{test(){}}'), {
       type: 'ObjectExpression',
       properties:
@@ -270,7 +315,7 @@ export default zora()
         }]
     });
   })
-  .only('parse expression{test(foo){}}', t => {
+  .test('parse expression {test(foo){}}', t => {
     t.deepEqual(parse('{test(foo){}}'), {
       type: 'ObjectExpression',
       properties:
@@ -293,7 +338,7 @@ export default zora()
         }]
     });
   })
-  .only('parse expression{test(foo, bar){}}', t => {
+  .test('parse expression {test(foo, bar){}}', t => {
     t.deepEqual(parse('{test(foo, bar){}}'), {
       type: 'ObjectExpression',
       properties:
@@ -307,6 +352,75 @@ export default zora()
               params:
                 [{type: 'Identifier', name: 'foo'},
                   {type: 'Identifier', name: 'bar'}],
+              body: {type: 'BlockStatement', body: []},
+              generator: false,
+              async: false
+            },
+          kind: 'init',
+          computed: false,
+          method: true,
+          shorthand: false
+        }]
+    });
+  })
+  .test('parse expression {[foo](){}}', t => {
+    t.deepEqual(parse('{[foo](){}}'), {
+      type: 'ObjectExpression',
+      properties:
+        [{
+          type: 'Property',
+          key: {type: 'Identifier', name: 'foo'},
+          value:
+            {
+              type: 'FunctionExpression',
+              id: null,
+              params: [],
+              body: {type: 'BlockStatement', body: []},
+              generator: false,
+              async: false
+            },
+          kind: 'init',
+          computed: true,
+          method: true,
+          shorthand: false
+        }]
+    });
+  })
+  .test('parse expression {5(){}}', t => {
+    t.deepEqual(parse('{5(){}}'), {
+      type: 'ObjectExpression',
+      properties:
+        [{
+          type: 'Property',
+          key: {type: 'Literal', value: 5},
+          value:
+            {
+              type: 'FunctionExpression',
+              id: null,
+              params: [],
+              body: {type: 'BlockStatement', body: []},
+              generator: false,
+              async: false
+            },
+          kind: 'init',
+          computed: false,
+          method: true,
+          shorthand: false
+        }]
+    });
+  })
+  .test('parse expression {"test"(){}}', t => {
+    t.deepEqual(parse('{"test"(){}}'), {
+      type: 'ObjectExpression',
+      properties:
+        [{
+          type: 'Property',
+          key: {type: 'Literal', value: 'test'},
+          value:
+            {
+              type: 'FunctionExpression',
+              id: null,
+              params: [],
               body: {type: 'BlockStatement', body: []},
               generator: false,
               async: false

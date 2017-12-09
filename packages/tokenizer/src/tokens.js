@@ -15,7 +15,7 @@ export const categories = {
 };
 
 //defined as keywords
-//todo check async, let ?
+//todo check async, let, static ?
 const keywords = 'await break case catch class const continue debugger default delete do else export extends finally for function if import in instanceof new return super switch this throw try typeof var void while with yield'.split(' ');
 const futureReservedKeyword = ['enum'];
 const reservedKeywords = keywords.concat(futureReservedKeyword, ['null', 'true', 'false']);
@@ -47,6 +47,10 @@ export const tokenRegistry = () => {
   ecmaScriptTokens.push(['true', createLanguageToken('true', true)]);
   ecmaScriptTokens.push(['false', createLanguageToken('false', false)]);
   ecmaScriptTokens.push(['of', createLanguageToken('of')]);
+  ecmaScriptTokens.push(['let', createLanguageToken('let')]);
+  ecmaScriptTokens.push(['get', createLanguageToken('get')]);
+  ecmaScriptTokens.push(['set', createLanguageToken('set')]);
+  ecmaScriptTokens.push(['static', createLanguageToken('static')]);
 
   const tokenMap = new Map(ecmaScriptTokens);
 

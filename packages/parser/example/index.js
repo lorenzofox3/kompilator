@@ -1,23 +1,23 @@
-// import {parseProgram} from "../src/index";
+import {parseProgram} from "../src/index";
 // import {traverse, visit} from "../src/ast";
 
-// const fs = require('fs');
-// const path = require('path');
+const fs = require('fs');
+const path = require('path');
 const utils = require('util');
-// const programPath = path.resolve(__dirname, '../fixtures/react.js');
-// const program = fs.readFileSync(programPath, {encoding: 'utf8'});
+const programPath = path.resolve(__dirname, '../fixtures/react.js');
+const program = fs.readFileSync(programPath, {encoding: 'utf8'});
 
 
 // const cherow = require('cherow');
-import {parse} from 'acorn';
+// import {parse} from 'acorn';
 
-const program = `var a={get foo(){}, set blah(val){}, foo(a){}}`;
+// const program = `var a={get foo(){}, set blah(val){}, foo(a){}}`;
 
-const ast = parse(program);
+const ast = parseProgram(program);
 
 
 // const ast = cherow.parseScript(program,{raw:true,comments:[], locations:true});
-console.log(utils.inspect(ast, {depth: null, colors: true}));
+// console.log(utils.inspect(ast, {depth: null, colors: true}));
 
 
 /* browser  */
