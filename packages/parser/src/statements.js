@@ -1,14 +1,17 @@
 import * as ast from './ast';
 import {parseIdentifierExpression} from "./expressions"
-import {parseArrayElision, asPropertyFunction, parsePropertyName} from "./utils";
-import {categories} from "../../tokenizer/src/tokens";
+import {composeArrityTwo} from "./utils";
+import {parseArrayBindingPattern} from "./array";
+import {parseObjectBindingPattern} from "./object";
 
-//todo see todo expressions Prefix / Infix Cominator
+// statements
+// Note: Function declarations,class declarations, array and object binding pattern are in they own files
+
 const Statement = (factory, fn) => {
   if (!fn) {
     return factory;
   } else {
-    return (a, b) => factory(fn(a, b));
+    return composeArrityTwo(factory, fn);
   }
 };
 
@@ -31,110 +34,9 @@ export const parseExpressionOrLabeledStatement = parser => {
   return nextToken === parser.get(':') ? parseLabeledStatement(parser) : withEventualSemiColon(parseExpressionStatement)(parser);
 };
 export const parseStatement = (parser) => {
-  parser.allowRegexp();
   const {value: nextToken} = parser.lookAhead();
   return parser.hasStatement(nextToken) ? parser.getStatement(nextToken)(parser) : withEventualSemiColon(parseExpressionStatement)(parser);
 };
-
-export const parseFormalParameters = (parser, parameters = []) => {
-  const {value: next} = parser.lookAhead();
-  const comma = parser.get(',');
-
-  if (next === parser.get(')')) {
-    return parameters;
-  }
-
-  if (next === parser.get('...')) {
-    parameters.push(parseRestElement(parser));
-    return parameters; //rest parameter must be the last
-  }
-
-  //todo no elision & defaultParameters must be lasts ...
-  if (next !== comma) {
-    let param = parseBindingIdentifierOrPattern(parser);
-    if (parser.eventually('=')) {
-      param = parseAssignmentPattern(parser, param);
-    }
-    parameters.push(param);
-  } else {
-    parser.eat();
-  }
-  return parseFormalParameters(parser, parameters);
-};
-export const parseFunctionDeclaration = Statement(ast.FunctionDeclaration, parser => {
-  parser.expect('function');
-  const node = {
-    id: parseIdentifierExpression(parser),
-    async: false,
-    generator: false
-  };
-  parser.expect('(');
-  node.params = parseFormalParameters(parser);
-  parser.expect(')');
-  node.body = parseBlockStatement(parser);
-  return node;
-});
-
-const parseClassMethod = Statement(ast.MethodDefinition, (parser) => {
-  const isStatic = parser.eventually('static');
-  const {value: next} = parser.lookAhead();
-  const {value: secondNext} = parser.lookAhead(1);
-  let prop;
-
-  if (next === parser.get('get') || next === parser.get('set')) {
-    if (secondNext !== parser.get('(')) {
-      const {value: accessor} = parser.eat();
-      prop = Object.assign(parsePropertyName(parser), {kind: accessor.rawValue});
-    } else {
-      prop = {
-        key: parseIdentifierExpression(parser),
-        computed: false
-      }
-    }
-  }
-
-  prop = prop !== void 0 ? prop : parsePropertyName(parser);
-
-  if (prop.kind === void 0) {
-    prop.kind = prop.key.name === 'constructor' ? 'constructor' : 'method';
-  }
-
-  return Object.assign(asPropertyFunction(parser, prop), {static: isStatic});
-});
-const parseClassElementList = (parser, elements = []) => {
-  const {value: next} = parser.lookAhead();
-  if (next === parser.get('}')) {
-    return elements;
-  }
-  if (next !== parser.get(';')) {
-    elements.push(parseClassMethod(parser));
-  } else {
-    parser.eat();
-  }
-  return parseClassElementList(parser, elements);
-};
-export const parseClassBody = Statement(ast.ClassBody, parser => {
-  parser.expect('{');
-  const node = {
-    body: parseClassElementList(parser)
-  };
-  parser.expect('}');
-  return node;
-});
-export const parseClassDeclaration = Statement(ast.Class, parser => {
-  parser.expect('class');
-  let superClass = null;
-  const id = parseIdentifierExpression(parser);
-  if (parser.eventually('extends')) {
-    superClass = parser.expression();
-  }
-
-  return {
-    id,
-    superClass,
-    body: parseClassBody(parser)
-  };
-});
 
 export const parseIfStatement = Statement(ast.IfStatement, parser => {
   parser.expect('if');
@@ -290,99 +192,6 @@ export const parseAssignmentPattern = Statement(ast.AssignmentPattern, (parser, 
     left,
     right: parser.expression(parser.getInfixPrecedence(parser.get(',')))
   };
-});
-export const parseRestElement = Statement(ast.RestElement, parser => {
-  parser.expect('...');
-  return {
-    argument: parseBindingIdentifierOrPattern(parser)
-  }
-});
-
-const parseArrayElements = (parser, elements = []) => {
-  const {value: next} = parser.lookAhead();
-
-  if (next === parser.get(']')) {
-    return elements;
-  }
-
-  if (next === parser.get('...')) {
-    elements.push(parseRestElement(parser));
-    parser.eventually(',');
-    return parseArrayElements(parser, elements);
-  }
-
-  if (next === parser.get(',')) {
-    parseArrayElision(parser, elements);
-    return parseArrayElements(parser, elements)
-  }
-
-  let element = parseBindingIdentifierOrPattern(parser);
-  if (parser.eventually('=')) {
-    element = parseAssignmentPattern(parser, element);
-  }
-  elements.push(element);
-  parser.eventually(',');
-
-  return parseArrayElements(parser, elements);
-};
-const parseArrayBindingPattern = Statement(ast.ArrayPattern, parser => {
-  parser.expect('[');
-  const node = {
-    elements: parseArrayElements(parser)
-  };
-  parser.expect(']');
-  return node;
-});
-
-const parseSingleNameBindingProperty = parser => {
-  const key = parseIdentifierExpression(parser);
-  let value = key;
-  let shorthand = false;
-  if (parser.eventually(':')) {
-    value = parseBindingIdentifierOrPattern(parser);
-  } else {
-    shorthand = true;
-    value = key;
-  }
-
-  if (parser.eventually('=')) {
-    value = parseAssignmentPattern(parser, value);
-  }
-  return {shorthand, key, value};
-};
-const parsePropertyNameProperty = parser => {
-  const property = parsePropertyName(parser);
-  parser.expect(':');
-  return Object.assign(property, {
-    value: parseBindingIdentifierOrPattern(parser)
-  });
-};
-const parseBindingProperty = parser => {
-  const {value: next} = parser.lookAhead();
-  const property = ast.Property({});
-  return next.type === categories.Identifier ? //identifier but not reserved word
-    Object.assign(property, parseSingleNameBindingProperty(parser)) :
-    Object.assign(property, parsePropertyNameProperty(parser));
-};
-const parseBindingPropertyList = (parser, properties = []) => {
-  const {value: next} = parser.lookAhead();
-  if (next === parser.get('}')) {
-    return properties;
-  }
-  if (next !== parser.get(',')) {
-    properties.push(parseBindingProperty(parser));
-  } else {
-    parser.eat(); //todo elision not allowed
-  }
-  return parseBindingPropertyList(parser, properties);
-};
-const parseObjectBindingPattern = Statement(ast.ObjectPattern, parser => {
-  parser.expect('{');
-  const node = {
-    properties: parseBindingPropertyList(parser)
-  };
-  parser.expect('}');
-  return node;
 });
 
 export const parseBindingIdentifierOrPattern = parser => {

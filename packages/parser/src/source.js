@@ -11,7 +11,7 @@ export const forwardArrityOne = (receiver, stream, ...methods) => {
   return receiver;
 };
 
-//a buffered stream token
+//a buffered token stream
 const tokenStream = ({scanner, tokenRegistry, filter, evaluate}) => {
   const filterFunc = lazyFilterWith(filter || (t => t.type >= 4));
   const map = lazyMapWith(evaluate || tokenRegistry.evaluate);

@@ -81,7 +81,7 @@ const categories = {
 };
 
 //defined as keywords
-//todo check async, let ?
+//todo check async, let, static ?
 const keywords = 'await break case catch class const continue debugger default delete do else export extends finally for function if import in instanceof new return super switch this throw try typeof var void while with yield'.split(' ');
 const futureReservedKeyword = ['enum'];
 const reservedKeywords = keywords.concat(futureReservedKeyword, ['null', 'true', 'false']);
@@ -113,6 +113,10 @@ const tokenRegistry = () => {
   ecmaScriptTokens.push(['true', createLanguageToken('true', true)]);
   ecmaScriptTokens.push(['false', createLanguageToken('false', false)]);
   ecmaScriptTokens.push(['of', createLanguageToken('of')]);
+  ecmaScriptTokens.push(['let', createLanguageToken('let')]);
+  ecmaScriptTokens.push(['get', createLanguageToken('get')]);
+  ecmaScriptTokens.push(['set', createLanguageToken('set')]);
+  ecmaScriptTokens.push(['static', createLanguageToken('static')]);
 
   const tokenMap = new Map(ecmaScriptTokens);
 
@@ -162,7 +166,7 @@ const lazyFilterWith = fn => function* (iterator) {
 
 const syntacticFlags = {
   allowRegexp: 1 << 0,
-  inTemplateSubstitution: 1 << 1
+  allowRightBrace: 1 << 1
 };
 
 const CHAR_STAR = '*';
@@ -321,7 +325,7 @@ const punctuators = (punctuatorList = puncutators) => {
         case CHAR_SLASH:
           return ~context & syntacticFlags.allowRegexp;
         case CHAR_BRACE_CLOSE:
-          return ~context & syntacticFlags.inTemplateSubstitution;
+          return context & syntacticFlags.allowRightBrace;
         default:
           return sizeOnePunctuatorList.includes(next);
       }
@@ -434,7 +438,7 @@ const templateTailOrMiddle = () => {
   return {
     test (sourceStream, context) {
       const next = sourceStream.seeNextAt();
-      return next === CHAR_BRACE_CLOSE && (context & syntacticFlags.inTemplateSubstitution);
+      return next === CHAR_BRACE_CLOSE && (~context & syntacticFlags.allowRightBrace);
     },
     lexeme (sourceStream) {
       return middleOrTail(sourceStream);
@@ -486,8 +490,13 @@ todo: later we can give ability to the consumer to configure the scanner to perf
 //return an iterable sequence of lexemes (note it can only be consumed once like a generator)
 //The consumer (like a parser) will have to handle the syntactic state and the token evaluation by itself
 const lexemes = (code, scanner$$1) => {
-  let context = syntacticFlags.allowRegexp;
+  let context = syntacticFlags.allowRegexp | syntacticFlags.allowRightBrace;
+  let previousContext = context;
   const source = sourceStream(code);
+  const holdContext = fn => _ => {
+    previousContext = context;
+    fn();
+  };
   return {
     * [Symbol.iterator] () {
       while (true) {
@@ -497,18 +506,21 @@ const lexemes = (code, scanner$$1) => {
         yield scanner$$1(source, context);
       }
     },
-    allowRegexp () {
+    restoreContext () {
+      context = previousContext;
+    },
+    allowRegexp: holdContext(() => {
       context |= syntacticFlags.allowRegexp;
-    },
-    disallowRegexp () {
+    }),
+    disallowRegexp: holdContext(() => {
       context &= ~syntacticFlags.allowRegexp;
-    },
-    allowRightBracePunctuator () {
-      context |= syntacticFlags.inTemplateSubstitution;
-    },
-    disallow () {
-      context &= ~syntacticFlags.inTemplateSubstitution;
-    },
+    }),
+    allowRightBrace: holdContext(() => { // as punctuator vs template middle/tail
+      context |= syntacticFlags.allowRightBrace;
+    }),
+    disallowRightBrace: holdContext(() => {
+      context &= ~syntacticFlags.allowRightBrace;
+    }),
     loc () {
       return source.loc();
     }
@@ -531,8 +543,7 @@ const tokenize = function* (code, {scanner: scanner$$1 = defaultScanner, tokenRe
   const filterMap = iter => mapFunc(filterFunc(iter));
   const stream = lexemes(code, scanner$$1);
 
-  let isInSubstitution = false;
-  let pendingBracePairs = 0;
+  let substitutionStack = []; //pending braces
 
   for (let t of filterMap(stream)) {
     yield t;
@@ -546,27 +557,31 @@ const tokenize = function* (code, {scanner: scanner$$1 = defaultScanner, tokenRe
         stream.disallowRegexp();
       }
 
-      if (isInSubstitution === true && t.rawValue === CHAR_BRACE_OPEN) {
-        pendingBracePairs++;
-        stream.exitTemplateSubstitution();
-      }
-
-      if (isInSubstitution === true && t.rawValue === CHAR_BRACE_CLOSE) {
-        pendingBracePairs--;
-        if (pendingBracePairs === 0) {
-          stream.enterTemplateSubstitution();
-        }
-      }
-
       //template literal substitution
       if (t.type === categories.TemplateHead || t.type === categories.TemplateMiddle) {
-        isInSubstitution = true;
-        pendingBracePairs = 0;
+        substitutionStack.push(0);
+        stream.disallowRightBrace();
         stream.allowRegexp();
-        stream.enterTemplateSubstitution();
       } else if (t.type === categories.TemplateTail) {
-        isInSubstitution = false;
-        stream.exitTemplateSubstitution();
+        substitutionStack.pop();
+      }
+
+      //without context we need to backtrack braces
+      if (substitutionStack.length) {
+
+        const lastSubstitutionIndex = substitutionStack.length - 1;
+
+        if (t.rawValue === '{') {
+          substitutionStack[lastSubstitutionIndex] = substitutionStack[lastSubstitutionIndex] + 1;
+          stream.allowRightBrace();
+        }
+
+        if (t.rawValue === '}') {
+          let pending = substitutionStack[lastSubstitutionIndex] = substitutionStack[lastSubstitutionIndex] - 1;
+          if (pending === 0) {
+            stream.disallowRightBrace();
+          }
+        }
       }
     }
   }

@@ -49,7 +49,7 @@ export const parserFactory = (tokens = defaultRegistry) => {
         module () {
           throw new Error('not implemented');
         },
-      }, tokenStream, 'lookAhead', 'next', 'eat', 'allowRegexp', 'disallowRegexp', 'allowRightBrace', 'disallowRightBrace'),
+      }, tokenStream, 'lookAhead', 'next', 'eat', 'allowRegexp', 'disallowRegexp'),
       tokens);
 
     return parser;

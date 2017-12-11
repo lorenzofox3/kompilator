@@ -26,6 +26,30 @@ export default zora()
       id: {type: 'Identifier', name: 'a'}
     }]);
   })
+  .test('parse function *a(){foo++}', t => {
+    t.deepEqual(parse('function *a(){foo++}').body, [{
+      type: 'FunctionDeclaration',
+      params: [],
+      body:
+        {
+          type: 'BlockStatement',
+          body:
+            [{
+              type: 'ExpressionStatement',
+              expression:
+                {
+                  type: 'UpdateExpression',
+                  argument: {type: 'Identifier', name: 'foo'},
+                  operator: '++',
+                  prefix: false
+                }
+            }]
+        },
+      async: false,
+      generator: true,
+      id: {type: 'Identifier', name: 'a'}
+    }]);
+  })
   .test('parse function a(){}', t => {
     t.deepEqual(parse('function a(){}').body, [{
       type: 'FunctionDeclaration',

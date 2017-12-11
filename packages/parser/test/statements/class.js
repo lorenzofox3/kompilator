@@ -335,6 +335,138 @@ export default zora()
         }
     }]);
   })
+  .test('parse class test extends foo{constructor(){super()}}', t => {
+    t.deepEqual(parse('class test extends foo{constructor(){super()}}').body, [{
+      type: 'ClassDeclaration',
+      id: {type: 'Identifier', name: 'test'},
+      superClass: {type: 'Identifier', name: 'foo'},
+      body:
+        {
+          type: 'ClassBody',
+          body:
+            [{
+              type: 'MethodDefinition',
+              computed: false,
+              key: {type: 'Identifier', name: 'constructor'},
+              kind: 'constructor',
+              static: false,
+              value:
+                {
+                  type: 'FunctionExpression',
+                  id: null,
+                  params: [],
+                  body:
+                    {
+                      type: 'BlockStatement',
+                      body:
+                        [{
+                          type: 'ExpressionStatement',
+                          expression:
+                            {
+                              type: 'CallExpression',
+                              callee: {type: 'Super'},
+                              arguments: []
+                            }
+                        }]
+                    },
+                  generator: false,
+                  async: false
+                }
+            }]
+        }
+    }]);
+  })
+  .test('parse class test {foo(){super["test"]++}}', t => {
+    t.deepEqual(parse('class test {foo(){super["test"]++}}').body, [{
+      type: 'ClassDeclaration',
+      id: {type: 'Identifier', name: 'test'},
+      superClass: null,
+      body:
+        {
+          type: 'ClassBody',
+          body:
+            [{
+              type: 'MethodDefinition',
+              computed: false,
+              key: {type: 'Identifier', name: 'foo'},
+              kind: 'method',
+              static: false,
+              value:
+                {
+                  type: 'FunctionExpression',
+                  id: null,
+                  params: [],
+                  body:
+                    {
+                      type: 'BlockStatement',
+                      body:
+                        [{
+                          type: 'ExpressionStatement',
+                          expression:
+                            {
+                              type: 'UpdateExpression',
+                              argument:
+                                {
+                                  type: 'MemberExpression',
+                                  object: {type: 'Super'},
+                                  computed: true,
+                                  property: {type: 'Literal', value: 'test'}
+                                },
+                              operator: '++',
+                              prefix: false
+                            }
+                        }]
+                    },
+                  generator: false,
+                  async: false
+                }
+            }]
+        }
+    }]);
+  })
+  .test('parse class test {foo(){super.bar}}', t => {
+    t.deepEqual(parse('class test {foo(){super.bar}}').body, [{
+      type: 'ClassDeclaration',
+      id: {type: 'Identifier', name: 'test'},
+      superClass: null,
+      body:
+        {
+          type: 'ClassBody',
+          body:
+            [{
+              type: 'MethodDefinition',
+              computed: false,
+              key: {type: 'Identifier', name: 'foo'},
+              kind: 'method',
+              static: false,
+              value:
+                {
+                  type: 'FunctionExpression',
+                  id: null,
+                  params: [],
+                  body:
+                    {
+                      type: 'BlockStatement',
+                      body:
+                        [{
+                          type: 'ExpressionStatement',
+                          expression:
+                            {
+                              type: 'MemberExpression',
+                              object: {type: 'Super'},
+                              computed: false,
+                              property: {type: 'Identifier', name: 'bar'}
+                            }
+                        }]
+                    },
+                  generator: false,
+                  async: false
+                }
+            }]
+        }
+    }]);
+  })
+
 
 
 

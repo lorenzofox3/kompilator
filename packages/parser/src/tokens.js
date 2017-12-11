@@ -1,7 +1,10 @@
 import {tokenRegistry, categories} from "../../tokenizer/src/tokens";
 import * as expressions from './expressions';
 import * as statements from './statements';
-import {withEventualSemiColon} from "./statements";
+import {parseArrayLiteralExpression, parseSpreadExpression} from "./array";
+import {parseObjectLiteralExpression} from "./object";
+import {parseClassDeclaration, parseClassExpression} from "./class";
+import {parseFunctionExpression, parseFunctionDeclaration, parseCallExpression} from "./function";
 
 export const ECMAScriptTokenRegistry = () => {
   const registry = tokenRegistry();
@@ -19,7 +22,7 @@ export const ECMAScriptTokenRegistry = () => {
   prefixMap.set(registry.get('typeof'), {parse: expressions.parseUnaryExpression, precedence: 16});
   prefixMap.set(registry.get('void'), {parse: expressions.parseUnaryExpression, precedence: 16});
   prefixMap.set(registry.get('delete'), {parse: expressions.parseUnaryExpression, precedence: 16});
-  prefixMap.set(registry.get('...'), {parse: expressions.parseSpreadExpression, precedence: 1});
+  prefixMap.set(registry.get('...'), {parse: parseSpreadExpression, precedence: 1});
   //update operators
   prefixMap.set(registry.get('--'), {parse: expressions.parseUpdateExpressionAsPrefix, precedence: 16});
   prefixMap.set(registry.get('++'), {parse: expressions.parseUpdateExpressionAsPrefix, precedence: 16});
@@ -35,18 +38,18 @@ export const ECMAScriptTokenRegistry = () => {
   prefixMap.set(registry.get('true'), {parse: expressions.parseLiteralExpression, precedence: -1});
   // prefixMap.set(categories.Template, {parse: expressions.parseTemplateLiteral, precedence: -1});
   // prefixMap.set(categories.TemplateHead, {parse: expressions.parseTemplateLiteral, precedence: -1});
-  prefixMap.set(registry.get('['), {parse: expressions.parseArrayLiteralExpression, precedence: -1});
-  prefixMap.set(registry.get('{'), {parse: expressions.parseObjectLiteralExpression, precedence: -1});
+  prefixMap.set(registry.get('['), {parse: parseArrayLiteralExpression, precedence: -1});
+  prefixMap.set(registry.get('{'), {parse: parseObjectLiteralExpression, precedence: -1});
   //identifiers
   prefixMap.set(registry.get('this'), {parse: expressions.parseThisExpression, precedence: -1});
+  prefixMap.set(registry.get('super'), {parse: expressions.parseSuperExpression, precedence: -1});
   prefixMap.set(categories.Identifier, {parse: expressions.parseIdentifierExpression, precedence: -1});
   //functions
-  prefixMap.set(registry.get('function'), {parse: expressions.parseFunctionExpression, precedence: -1});
-  prefixMap.set(registry.get('class'), {parse: expressions.parseClassExpression, precedence: -1});
+  prefixMap.set(registry.get('function'), {parse: parseFunctionExpression, precedence: -1});
+  prefixMap.set(registry.get('class'), {parse: parseClassExpression, precedence: -1});
   prefixMap.set(registry.get('new'), {parse: expressions.parseNewExpression, precedence: 18});
   //group
   prefixMap.set(registry.get('('), {parse: expressions.parseGroupExpression, precedence: 20});
-
 
   const infixMap = new Map();
   //sequence
@@ -99,7 +102,7 @@ export const ECMAScriptTokenRegistry = () => {
   infixMap.set(registry.get('++'), {parse: expressions.parseUpdateExpression, precedence: 17});
   infixMap.set(registry.get('--'), {parse: expressions.parseUpdateExpression, precedence: 17});
   //call
-  infixMap.set(registry.get('('), {parse: expressions.parseCallExpression, precedence: 19});
+  infixMap.set(registry.get('('), {parse: parseCallExpression, precedence: 19});
 
   /**
    * STATEMENTS
@@ -110,21 +113,21 @@ export const ECMAScriptTokenRegistry = () => {
   statementsMap.set(registry.get(';'), statements.parseEmptyStatement);
   statementsMap.set(registry.get('{'), statements.parseBlockStatement);
   statementsMap.set(registry.get('for'), statements.parseForStatement);
-  statementsMap.set(registry.get('var'), withEventualSemiColon(statements.parseVariableDeclaration));
-  statementsMap.set(registry.get('const'), withEventualSemiColon(statements.parseConstDeclaration));
-  statementsMap.set(registry.get('let'), withEventualSemiColon(statements.parseLetDeclaration));
-  statementsMap.set(registry.get('function'), statements.parseFunctionDeclaration);
-  statementsMap.set(registry.get('class'), statements.parseClassDeclaration);
-  statementsMap.set(registry.get('return'), withEventualSemiColon(statements.parseReturnStatement));
-  statementsMap.set(registry.get('break'), withEventualSemiColon(statements.parseBreakStatement));
-  statementsMap.set(registry.get('continue'), withEventualSemiColon(statements.parseContinueStatement));
-  statementsMap.set(registry.get('throw'), withEventualSemiColon(statements.parseThrowStatement));
-  statementsMap.set(registry.get('while'), withEventualSemiColon(statements.parseWhileStatement));
-  statementsMap.set(registry.get('do'), withEventualSemiColon(statements.parseDoWhileStatement));
+  statementsMap.set(registry.get('var'), statements.withEventualSemiColon(statements.parseVariableDeclaration));
+  statementsMap.set(registry.get('const'), statements.withEventualSemiColon(statements.parseConstDeclaration));
+  statementsMap.set(registry.get('let'), statements.withEventualSemiColon(statements.parseLetDeclaration));
+  statementsMap.set(registry.get('function'), parseFunctionDeclaration);
+  statementsMap.set(registry.get('class'), parseClassDeclaration);
+  statementsMap.set(registry.get('return'), statements.withEventualSemiColon(statements.parseReturnStatement));
+  statementsMap.set(registry.get('break'), statements.withEventualSemiColon(statements.parseBreakStatement));
+  statementsMap.set(registry.get('continue'), statements.withEventualSemiColon(statements.parseContinueStatement));
+  statementsMap.set(registry.get('throw'), statements.withEventualSemiColon(statements.parseThrowStatement));
+  statementsMap.set(registry.get('while'), statements.withEventualSemiColon(statements.parseWhileStatement));
+  statementsMap.set(registry.get('do'), statements.withEventualSemiColon(statements.parseDoWhileStatement));
   statementsMap.set(registry.get('try'), statements.parseTryStatement);
   statementsMap.set(registry.get('switch'), statements.parseSwitchStatement);
   statementsMap.set(registry.get('with'), statements.parseWithStatement);
-  statementsMap.set(registry.get('debugger'), withEventualSemiColon(statements.parseDebuggerStatement));
+  statementsMap.set(registry.get('debugger'), statements.withEventualSemiColon(statements.parseDebuggerStatement));
   statementsMap.set(categories.Identifier, statements.parseExpressionOrLabeledStatement);
 
   return Object.assign(registry, {
@@ -148,6 +151,5 @@ export const ECMAScriptTokenRegistry = () => {
     }
   });
 };
-
 
 export default ECMAScriptTokenRegistry();

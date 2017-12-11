@@ -26,6 +26,30 @@ export default zora()
       id: null
     });
   })
+  .test('parse expression function *(){foo++}', t => {
+    t.deepEqual(parse('function *(){foo++}'), {
+      type: 'FunctionExpression',
+      params: [],
+      body:
+        {
+          type: 'BlockStatement',
+          body:
+            [{
+              type: 'ExpressionStatement',
+              expression:
+                {
+                  type: 'UpdateExpression',
+                  argument: {type: 'Identifier', name: 'foo'},
+                  operator: '++',
+                  prefix: false
+                }
+            }]
+        },
+      async: false,
+      generator: true,
+      id: null
+    });
+  })
   .test('parse expression function a(){}', t => {
     t.deepEqual(parse('function a(){}'), {
       type: 'FunctionExpression',
@@ -33,6 +57,16 @@ export default zora()
       body: {type: 'BlockStatement', body: []},
       async: false,
       generator: false,
+      id: {type: 'Identifier', name: 'a'}
+    });
+  })
+  .test('parse expression function *a(){}', t => {
+    t.deepEqual(parse('function *a(){}'), {
+      type: 'FunctionExpression',
+      params: [],
+      body: {type: 'BlockStatement', body: []},
+      async: false,
+      generator: true,
       id: {type: 'Identifier', name: 'a'}
     });
   })
