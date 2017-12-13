@@ -1,7 +1,7 @@
 import {Property, ObjectExpression,ObjectPattern, Identifier} from "./ast"
-import {composeArrityOne} from "./utils";
+import {composeArityOne} from "./utils";
 import {categories} from "../../tokenizer/src/tokens";
-import {parseIdentifierExpression} from "./expressions";
+import {parseBindingIdentifier, parseIdentifierName} from "./expressions";
 import {asPropertyFunction} from "./function";
 import {parseBindingIdentifierOrPattern, parseAssignmentPattern} from "./statements";
 
@@ -28,14 +28,14 @@ export const parsePropertyName = parser => {
 };
 
 
-const parsePropertyDefinition = composeArrityOne(Property, parser => {
+const parsePropertyDefinition = composeArityOne(Property, parser => {
   let {value: next} = parser.lookAhead();
   let prop;
   const {value: secondNext} = parser.lookAhead(1);
 
   //binding reference
   if (next.type === categories.Identifier && (secondNext === parser.get(',') || secondNext === parser.get('}'))) {
-    const key = parseIdentifierExpression(parser);
+    const key = parseBindingIdentifier(parser);
     return {
       shorthand: true,
       key,
@@ -86,7 +86,7 @@ const parsePropertyList = (parser, properties = []) => {
   }
   return parsePropertyList(parser, properties);
 };
-export const parseObjectLiteralExpression = composeArrityOne(ObjectExpression, parser => {
+export const parseObjectLiteralExpression = composeArityOne(ObjectExpression, parser => {
   parser.expect('{');
   const node = {
     properties: parsePropertyList(parser)
@@ -96,7 +96,7 @@ export const parseObjectLiteralExpression = composeArrityOne(ObjectExpression, p
 });
 
 const parseSingleNameBindingProperty = parser => {
-  const key = parseIdentifierExpression(parser);
+  const key = parseIdentifierName(parser);
   let value = key;
   let shorthand = false;
   if (parser.eventually(':')) {
@@ -137,7 +137,7 @@ const parseBindingPropertyList = (parser, properties = []) => {
   }
   return parseBindingPropertyList(parser, properties);
 };
-export const parseObjectBindingPattern = composeArrityOne(ObjectPattern, parser => {
+export const parseObjectBindingPattern = composeArityOne(ObjectPattern, parser => {
   parser.expect('{');
   const node = {
     properties: parseBindingPropertyList(parser)

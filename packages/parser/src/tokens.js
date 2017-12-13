@@ -5,6 +5,7 @@ import {parseArrayLiteralExpression, parseSpreadExpression} from "./array";
 import {parseObjectLiteralExpression} from "./object";
 import {parseClassDeclaration, parseClassExpression} from "./class";
 import {parseFunctionExpression, parseFunctionDeclaration, parseCallExpression} from "./function";
+import {withEventualSemiColon} from "./utils";
 
 export const ECMAScriptTokenRegistry = () => {
   const registry = tokenRegistry();
@@ -23,6 +24,7 @@ export const ECMAScriptTokenRegistry = () => {
   prefixMap.set(registry.get('void'), {parse: expressions.parseUnaryExpression, precedence: 16});
   prefixMap.set(registry.get('delete'), {parse: expressions.parseUnaryExpression, precedence: 16});
   prefixMap.set(registry.get('...'), {parse: parseSpreadExpression, precedence: 1});
+  prefixMap.set(registry.get('yield'), {parse: expressions.parseYieldExpression, precedence: 2});
   //update operators
   prefixMap.set(registry.get('--'), {parse: expressions.parseUpdateExpressionAsPrefix, precedence: 16});
   prefixMap.set(registry.get('++'), {parse: expressions.parseUpdateExpressionAsPrefix, precedence: 16});
@@ -43,7 +45,7 @@ export const ECMAScriptTokenRegistry = () => {
   //identifiers
   prefixMap.set(registry.get('this'), {parse: expressions.parseThisExpression, precedence: -1});
   prefixMap.set(registry.get('super'), {parse: expressions.parseSuperExpression, precedence: -1});
-  prefixMap.set(categories.Identifier, {parse: expressions.parseIdentifierExpression, precedence: -1});
+  prefixMap.set(categories.Identifier, {parse: expressions.parseIdentifierName, precedence: -1});
   //functions
   prefixMap.set(registry.get('function'), {parse: parseFunctionExpression, precedence: -1});
   prefixMap.set(registry.get('class'), {parse: parseClassExpression, precedence: -1});
@@ -113,41 +115,75 @@ export const ECMAScriptTokenRegistry = () => {
   statementsMap.set(registry.get(';'), statements.parseEmptyStatement);
   statementsMap.set(registry.get('{'), statements.parseBlockStatement);
   statementsMap.set(registry.get('for'), statements.parseForStatement);
-  statementsMap.set(registry.get('var'), statements.withEventualSemiColon(statements.parseVariableDeclaration));
-  statementsMap.set(registry.get('const'), statements.withEventualSemiColon(statements.parseConstDeclaration));
-  statementsMap.set(registry.get('let'), statements.withEventualSemiColon(statements.parseLetDeclaration));
+  statementsMap.set(registry.get('var'), withEventualSemiColon(statements.parseVariableDeclaration));
+  statementsMap.set(registry.get('const'), withEventualSemiColon(statements.parseConstDeclaration));
+  statementsMap.set(registry.get('let'), withEventualSemiColon(statements.parseLetDeclaration));
   statementsMap.set(registry.get('function'), parseFunctionDeclaration);
   statementsMap.set(registry.get('class'), parseClassDeclaration);
-  statementsMap.set(registry.get('return'), statements.withEventualSemiColon(statements.parseReturnStatement));
-  statementsMap.set(registry.get('break'), statements.withEventualSemiColon(statements.parseBreakStatement));
-  statementsMap.set(registry.get('continue'), statements.withEventualSemiColon(statements.parseContinueStatement));
-  statementsMap.set(registry.get('throw'), statements.withEventualSemiColon(statements.parseThrowStatement));
-  statementsMap.set(registry.get('while'), statements.withEventualSemiColon(statements.parseWhileStatement));
-  statementsMap.set(registry.get('do'), statements.withEventualSemiColon(statements.parseDoWhileStatement));
+  statementsMap.set(registry.get('return'), withEventualSemiColon(statements.parseReturnStatement));
+  statementsMap.set(registry.get('break'), withEventualSemiColon(statements.parseBreakStatement));
+  statementsMap.set(registry.get('continue'), withEventualSemiColon(statements.parseContinueStatement));
+  statementsMap.set(registry.get('throw'), withEventualSemiColon(statements.parseThrowStatement));
+  statementsMap.set(registry.get('while'), withEventualSemiColon(statements.parseWhileStatement));
+  statementsMap.set(registry.get('do'), withEventualSemiColon(statements.parseDoWhileStatement));
   statementsMap.set(registry.get('try'), statements.parseTryStatement);
   statementsMap.set(registry.get('switch'), statements.parseSwitchStatement);
   statementsMap.set(registry.get('with'), statements.parseWithStatement);
-  statementsMap.set(registry.get('debugger'), statements.withEventualSemiColon(statements.parseDebuggerStatement));
+  statementsMap.set(registry.get('debugger'), withEventualSemiColon(statements.parseDebuggerStatement));
   statementsMap.set(categories.Identifier, statements.parseExpressionOrLabeledStatement);
+
+  const isLexicallyReserved = registry.isReserved;
 
   return Object.assign(registry, {
     getInfix (token) {
-      return infixMap.get(token.type);
+      return infixMap.get(token) || infixMap.get(token.type);
     },
     getPrefix (token) {
-      return prefixMap.get(token.type);
+      return prefixMap.get(token) || prefixMap.get(token.type);
     },
     getStatement (token) {
-      return statementsMap.get(token.type);
+      return statementsMap.get(token) || statementsMap.get(token.type);
     },
     hasPrefix (token) {
-      return prefixMap.has(token.type);
+      return prefixMap.has(token) || prefixMap.has(token.type);
     },
     hasInfix (token) {
-      return infixMap.has(token.type)
+      return infixMap.has(token) || infixMap.has(token.type)
     },
     hasStatement (token) {
-      return statementsMap.has(token.type);
+      return statementsMap.has(token) || statementsMap.has(token.type);
+    },
+    isReserved (token) {
+      return isLexicallyReserved(token.value);
+    },
+    addUnaryOperator(precedence){
+      return this.addPrefixOperator(precedence,expressions.parseUnaryExpression);
+    },
+    addBinaryOperator(precedence){
+      return this.addPrefixOperator(precedence,expressions.parseBinaryExpression);
+    },
+    addPrefixOperator(precedence, parseFunction){
+      throw new Error('not Implemented');
+      return {
+        asPunctuator(symbol){},
+        asReservedKeyWord(symbol){},
+        asIdentifierName(symbol){}
+      };
+    },
+    addInfixOperator(precendence, parseFunction){
+      throw new Error('not Implemented');
+      return {
+        asPunctuator(symbol){},
+        asReservedKeyWord(symbol){},
+        asKeyword(symbol){}
+      };
+    },
+    addStatement(parseFunction){
+      throw new Error('not Implemented');
+      return {
+        asReservedKeyWord(symbol){},
+        asKeyword(symbol){}
+      };
     }
   });
 };

@@ -1,18 +1,18 @@
 import {ArrayExpression, ArrayPattern, RestElement, SpreadElement} from "./ast";
-import {composeArrityOne, composeArrityTwo} from "./utils";
+import {composeArityOne, composeArityTwo} from "./utils";
 import {parseAssignmentPattern, parseBindingIdentifierOrPattern} from "./statements";
 
 // "array" parsing is shared across various components:
 // - as array literals
 // - as array pattern
 
-export const parseRestElement = composeArrityOne(RestElement, parser => {
+export const parseRestElement = composeArityOne(RestElement, parser => {
   parser.expect('...');
   return {
     argument: parseBindingIdentifierOrPattern(parser)
   };
 });
-export const parseSpreadExpression = composeArrityOne(SpreadElement, parser => {
+export const parseSpreadExpression = composeArityOne(SpreadElement, parser => {
   parser.expect('...');
   return {
     argument: parser.expression(parser.getPrefixPrecedence(parser.get('...')))
@@ -70,7 +70,7 @@ const parseArrayElementsBindingPattern = arrayElements(parseRestElement, (parser
   parser.eventually(',');
 });
 
-export const parseArrayBindingPattern = composeArrityTwo(ArrayPattern, parser => {
+export const parseArrayBindingPattern = composeArityTwo(ArrayPattern, parser => {
   parser.expect('[');
   const node = {
     elements: parseArrayElementsBindingPattern(parser)
@@ -78,7 +78,7 @@ export const parseArrayBindingPattern = composeArrityTwo(ArrayPattern, parser =>
   parser.expect(']');
   return node;
 });
-export const parseArrayLiteralExpression = composeArrityOne(ArrayExpression, (parser) => {
+export const parseArrayLiteralExpression = composeArityOne(ArrayExpression, (parser) => {
   parser.expect('[');
   const node = {
     elements: parseArrayElements(parser)

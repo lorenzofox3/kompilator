@@ -1,7 +1,7 @@
 import * as ast from './ast';
-import {parseIdentifierExpression} from "./expressions";
+import {parseBindingIdentifier} from "./expressions";
 import {parseBlockStatement,parseAssignmentPattern, parseBindingIdentifierOrPattern} from "./statements";
-import {composeArrityOne, composeArrityTwo} from "./utils";
+import {composeArityOne, composeArityTwo} from "./utils";
 import {parseSpreadExpression,parseRestElement} from "./array";
 
 // "function" parsing is shared across multiple components and deserves its own module to mutualize code more easily:
@@ -56,10 +56,10 @@ const parseParamsAndBody = parser => {
   const body = parseBlockStatement(parser);
   return {params, body};
 };
-export const parseFunctionDeclaration = composeArrityOne(ast.FunctionDeclaration, parser => {
+export const parseFunctionDeclaration = composeArityOne(ast.FunctionDeclaration, parser => {
   parser.expect('function');
   const generator = parser.eventually('*');
-  const id = parseIdentifierExpression(parser);
+  const id = parseBindingIdentifier(parser);
   return Object.assign({
     id,
     generator
@@ -67,13 +67,13 @@ export const parseFunctionDeclaration = composeArrityOne(ast.FunctionDeclaration
 });
 
 //that is a prefix expression
-export const parseFunctionExpression = composeArrityOne(ast.FunctionExpression, parser => {
+export const parseFunctionExpression = composeArityOne(ast.FunctionExpression, parser => {
   parser.expect('function');
   const generator = parser.eventually('*');
   let id = null;
   const {value: nextToken} = parser.lookAhead();
   if (nextToken !== parser.get('(')) {
-    id = parseIdentifierExpression(parser);
+    id = parseBindingIdentifier(parser);
   }
   return Object.assign({id, generator}, parseParamsAndBody(parser));
 });
@@ -97,7 +97,7 @@ const parseFunctionCallArguments = (parser, expressions = []) => {
   parser.eventually(','); //todo no elision allowed
   return parseFunctionCallArguments(parser, expressions);
 };
-export const parseCallExpression = composeArrityTwo(ast.CallExpression, (parser, callee) => {
+export const parseCallExpression = composeArityTwo(ast.CallExpression, (parser, callee) => {
   const node = {
     callee,
     arguments: parseFunctionCallArguments(parser)

@@ -1,8 +1,9 @@
 import {
-  composeArrityOne as Prefix,
-  composeArrityThree as Infix
+  composeArityOne as Prefix,
+  composeArityThree as Infix
 } from "./utils";
 import * as ast from "./ast";
+import {categories} from "../../tokenizer/src/tokens";
 
 // expressions based on Javascript operators whether they are "prefix" or "infix"
 // Note: Functions and Class expressions, Object literals and Array literals are in their own files
@@ -20,6 +21,29 @@ const asUnaryExpression = (type) => Prefix(type, (parser) => {
     prefix: true
   };
 });
+
+//no reserved word
+export const parseBindingIdentifier = Prefix(ast.Identifier, parser => {
+  const {value: next} = parser.next();
+  if (parser.isReserved(next)) {
+    throw new Error(`Binding identifier can not be reserved keyword "${next.value}"`);
+  }
+  if (next.type !== categories.Identifier) {
+    throw new Error('expected an identifier');
+  }
+  return {
+    name: next.value
+  };
+});
+export const parseIdentifierName = Prefix(ast.Identifier, parser => {
+  const {value: next} = parser.next();
+  if (next.type !== categories.Identifier) {
+    throw new Error('expected an identifier');
+  }
+  return {
+    name: next.value
+  };
+});
 export const parseGroupExpression = (parser) => {
   parser.expect('(');
   const exp = parser.expression();
@@ -30,7 +54,6 @@ export const parseUnaryExpression = asUnaryExpression(ast.UnaryExpression);
 export const parseThisExpression = asValue(ast.ThisExpression);
 export const parseSuperExpression = asValue(ast.Super);
 export const parseLiteralExpression = asValue(ast.Literal, 'value');
-export const parseIdentifierExpression = asValue(ast.Identifier, 'name');
 export const parseRegularExpressionLiteral = Prefix(ast.Literal, parser => {
   const {value: regexp} = parser.next();
   return {
@@ -50,6 +73,17 @@ export const parseNewExpression = Prefix(ast.NewExpression, parser => {
     arguments: callee.arguments ? callee.arguments : []
   };
 });
+export const parseYieldExpression = Prefix(ast.YieldExpression, parser => {
+  parser.expect('yield');
+  let delegate = false;
+  if (parser.eventually('*')) {
+    delegate = true;
+  }
+  return {
+    argument: parser.expression(parser.getPrefixPrecedence(parser.get('yield'))),
+    delegate
+  };
+});
 
 //infix
 const asBinaryExpression = type => Infix(type, (parser, left, operator) => {
@@ -67,7 +101,7 @@ export const parseMemberAccessExpression = Infix(ast.MemberExpression, (parser, 
   const node = {
     object: left,
     computed: computed,
-    property: computed ? parser.expression() : parseIdentifierExpression(parser)
+    property: computed ? parser.expression() : parseIdentifierName(parser)
   };
   if (computed) {
     parser.expect(']');

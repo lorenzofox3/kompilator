@@ -1,9 +1,9 @@
 import {default as stream, forwardArrityOne} from './source';
 import {default as defaultRegistry} from './tokens';
-import {parseStatementList} from "./statements";
-import {Program, Identifier} from "./ast";
+import {parseModuleItemList, parseStatementList} from "./statements";
+import {Program} from "./ast";
 
-export const parserFactory = (tokens = defaultRegistry) => {
+const parserFactory = (tokens = defaultRegistry) => {
 
   const getInfixPrecedence = operator => tokens.hasInfix(operator) ? tokens.getInfix(operator).precedence : -1;
   const getPrefixPrecedence = operator => tokens.hasPrefix(operator) ? tokens.getPrefix(operator).precedence : -1;
@@ -11,7 +11,7 @@ export const parserFactory = (tokens = defaultRegistry) => {
   const parseInfix = (parser, left, precedence, exits) => {
     parser.disallowRegexp(); //regexp as a literal is a "prefix operator" so a "/" in infix position is a div punctuator
     const {value: operator} = parser.lookAhead();
-    if (!operator || precedence >= getInfixPrecedence(operator) || exits.includes(operator.type)) {
+    if (!operator || precedence >= getInfixPrecedence(operator) || exits.includes(operator)) {
       return left;
     }
     parser.eat();
@@ -31,10 +31,6 @@ export const parserFactory = (tokens = defaultRegistry) => {
           parser.allowRegexp(); //regexp as literal is a "prefix operator"
           const {value: token} = parser.lookAhead();
           if (!tokens.hasPrefix(token)) {
-            if (token.isReserved === true) { // reserved words are allowed as identifier names (such in member expressions)
-              parser.eat();
-              return Identifier({name: token.value});
-            }
             return null;
           }
           const left = tokens.getPrefix(token).parse(parser);
@@ -47,7 +43,10 @@ export const parserFactory = (tokens = defaultRegistry) => {
           });
         },
         module () {
-          throw new Error('not implemented');
+          return Program({
+            sourceType: 'module',
+            body: parseModuleItemList(parser)
+          });
         },
       }, tokenStream, 'lookAhead', 'next', 'eat', 'allowRegexp', 'disallowRegexp'),
       tokens);
@@ -57,12 +56,19 @@ export const parserFactory = (tokens = defaultRegistry) => {
 
 };
 
+export const parseModule = program => {
+  const parse = parserFactory();
+  return parse(program).module();
+};
+
 export const parseExpression = (expression) => {
   const parse = parserFactory();
   return parse(expression).expression();
 };
 
-export const parseProgram = program => {
+export const parseScript = program => {
   const parse = parserFactory();
   return parse(program).program();
 };
+
+export const parse = parseModule; //alias

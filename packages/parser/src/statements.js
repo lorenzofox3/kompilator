@@ -1,8 +1,9 @@
 import * as ast from './ast';
-import {parseIdentifierExpression} from "./expressions"
-import {composeArrityTwo} from "./utils";
+import {parseBindingIdentifier} from "./expressions";
+import {composeArityTwo, withEventualSemiColon} from "./utils";
 import {parseArrayBindingPattern} from "./array";
 import {parseObjectBindingPattern} from "./object";
+import {parseExportDeclaration, parseImportDeclaration} from "./module";
 
 // statements
 // Note: Function declarations,class declarations, array and object binding pattern are in they own files
@@ -11,12 +12,12 @@ const Statement = (factory, fn) => {
   if (!fn) {
     return factory;
   } else {
-    return composeArrityTwo(factory, fn);
+    return composeArityTwo(factory, fn);
   }
 };
 
 export const parseStatementList = (parser, exit = ['}'], statements = []) => {
-  const exitTokens = exit.map(s => parser.get(s)); // todo exit is not consistent with expression parser
+  const exitTokens = exit.map(s => parser.get(s));
   const {done, value: nextToken} = parser.lookAhead();
   if (done || exitTokens.includes(nextToken)) {
     return statements;
@@ -24,18 +25,34 @@ export const parseStatementList = (parser, exit = ['}'], statements = []) => {
   statements.push(parseStatement(parser));
   return parseStatementList(parser, exit, statements);
 };
-export const withEventualSemiColon = (fn) => parser => {
-  const node = fn(parser);
-  parser.eventually(';');
-  return node;
+
+const parseImport = withEventualSemiColon(parseImportDeclaration);
+const parseExport = withEventualSemiColon(parseExportDeclaration);
+export const parseModuleItemList = (parser, items = []) => {
+  const {done, value: nextToken} = parser.lookAhead();
+
+  if (done) {
+    return items;
+  }
+
+  if (nextToken === parser.get('import')) {
+    items.push(parseImport(parser));
+  } else if (nextToken === parser.get('export')) {
+    items.push(parseExport(parser));
+  } else {
+    items.push(parseStatement(parser));
+  }
+  return parseModuleItemList(parser, items);
 };
-export const parseExpressionOrLabeledStatement = parser => {
-  const {value: nextToken} = parser.lookAhead(1);
-  return nextToken === parser.get(':') ? parseLabeledStatement(parser) : withEventualSemiColon(parseExpressionStatement)(parser);
-};
+
+export const parseExpressionStatement = Statement(ast.ExpressionStatement, parser => ({
+  expression: parser.expression()
+}));
+
+const parseExpression = withEventualSemiColon(parseExpressionStatement);
 export const parseStatement = (parser) => {
   const {value: nextToken} = parser.lookAhead();
-  return parser.hasStatement(nextToken) ? parser.getStatement(nextToken)(parser) : withEventualSemiColon(parseExpressionStatement)(parser);
+  return parser.hasStatement(nextToken) ? parser.getStatement(nextToken)(parser) : parseExpression(parser);
 };
 
 export const parseIfStatement = Statement(ast.IfStatement, parser => {
@@ -64,9 +81,10 @@ export const parseBlockStatement = Statement(ast.BlockStatement, parser => {
   return node;
 });
 
-export const parseExpressionStatement = Statement(ast.ExpressionStatement, parser => ({
-  expression: parser.expression()
-}));
+export const parseExpressionOrLabeledStatement = parser => {
+  const {value: nextToken} = parser.lookAhead(1);
+  return nextToken === parser.get(':') ? parseLabeledStatement(parser) : parseExpression(parser);
+};
 
 export const parseEmptyStatement = Statement(ast.EmptyStatement, parser => {
   parser.expect(';');
@@ -131,9 +149,8 @@ export const parseSwitchCases = (parser, cases = []) => {
 };
 
 export const parseSwitchCase = Statement(ast.SwitchCase, (parser, nextToken) => {
-  const {type} = nextToken;
   const node = {
-    test: type === parser.get('case') ? parser.expression() : null
+    test: nextToken === parser.get('case') ? parser.expression() : null
   };
   parser.expect(':');
   node.consequent = parseStatementList(parser, ['}', 'case', 'default']);
@@ -201,7 +218,7 @@ export const parseBindingIdentifierOrPattern = parser => {
   } else if (parser.get('[') === next) {
     return parseArrayBindingPattern(parser);
   }
-  return parseIdentifierExpression(parser);
+  return parseBindingIdentifier(parser);
 };
 
 const asVariableDeclaration = (keyword = 'var') => Statement(ast.VariableDeclaration, parser => {
@@ -238,7 +255,7 @@ export const parseLetDeclaration = asVariableDeclaration('let');
 
 const getForDerivation = parser => {
   const {value: nextToken} = parser.lookAhead();
-  switch (nextToken.type) {
+  switch (nextToken) {
     case parser.get('in'):
       return asForIn;
     case parser.get('of'):

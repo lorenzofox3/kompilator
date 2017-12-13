@@ -87,6 +87,7 @@ export const Property = nodeFactory({
   method: false,
   value: null
 }, iterateProperty);
+export const YieldExpression = nodeFactory({type: 'YieldExpression', delegate: false}, yieldArgument);
 
 //infix nodes
 const asBinary = type => nodeFactory(type, yieldLeftRight);
@@ -179,7 +180,7 @@ export const LabeledStatement = nodeFactory('LabeledStatement', {
   }
 });
 
-export const Program = nodeFactory('Program', delegateBody);
+export const Program = nodeFactory({type: 'Program', sourceType: 'script'}, delegateBody);
 
 //declarations
 export const AssignmentPattern = nodeFactory('AssignmentPattern', yieldLeftRight);
@@ -211,6 +212,58 @@ export const Class = nodeFactory('ClassDeclaration', {
 });
 export const ClassBody = nodeFactory('ClassBody', delegateBody);
 export const MethodDefinition = nodeFactory('MethodDefinition', iterateProperty);
+
+//modules
+export const ImportDeclaration = nodeFactory('ImportDeclaration', {
+  * [Symbol.iterator] () {
+    yield* this.specifiers;
+    yield this.source;
+  }
+});
+export const ImportSpecifier = nodeFactory('ImportSpecifier', {
+  * [Symbol.iterator] () {
+    yield this.imported;
+    yield this.local;
+  }
+});
+export const ImportDefaultSpecifier = nodeFactory('ImportDefaultSpecifier', {
+  * [Symbol.iterator] () {
+    yield this.local;
+  }
+});
+export const ImportNamespaceSpecifier = nodeFactory('ImportNamespaceSpecifier', {
+  * [Symbol.iterator] () {
+    yield this.local;
+  }
+});
+export const ExportNamedDeclaration = nodeFactory({
+  type: 'ExportNamedDeclaration',
+  specifiers: [],
+  declaration: null,
+  source: null
+}, {
+  * [Symbol.iterator] () {
+    yield this.declaration;
+    yield* this.specifiers;
+    yield this.source;
+  }
+});
+export const ExportSpecifier = nodeFactory('ExportSpecifier', {
+  * [Symbol.iterator] () {
+    yield this.local;
+    yield this.exported;
+  }
+});
+export const ExportDefaultDeclaration = nodeFactory({type: 'ExportDefaultDeclaration', specifiers: [], source: null}, {
+  * [Symbol.iterator] () {
+    yield this.declaration;
+  }
+});
+export const ExportAllDeclaration = nodeFactory('ExportAllDeclaration', {
+  * [Symbol.iterator] () {
+    yield this.source;
+  }
+});
 
 //walk & traverse
 export function* traverse (node) {

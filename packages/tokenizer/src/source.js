@@ -52,11 +52,6 @@ export const sourceStream = (code) => {
       return code[index] === void 0;
     }
   });
-  Object.defineProperty(stream, 'index', {
-    get () {
-      return index;
-    }
-  });
 
   return stream;
 };

@@ -1,4 +1,2 @@
-import {parserFactory} from "../../src/index"
-const parseFunc = parserFactory();
-
-export const parse = code => parseFunc(code).program();
+import {parseScript} from "../../src/index"
+export const parse = code => parseScript(code);

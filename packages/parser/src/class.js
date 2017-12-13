@@ -1,11 +1,11 @@
 import {MethodDefinition, ClassBody, ClassExpression, Class} from "./ast";
-import {composeArrityOne} from "./utils";
-import {parseIdentifierExpression} from "./expressions";
+import {composeArityOne} from "./utils";
+import {parseBindingIdentifier} from "./expressions";
 import {categories} from "../../tokenizer/src/tokens";
 import {asPropertyFunction} from "./function";
 import {parsePropertyName} from "./object";
 
-const parseClassMethod = composeArrityOne(MethodDefinition, (parser) => {
+const parseClassMethod = composeArityOne(MethodDefinition, (parser) => {
   const isStatic = parser.eventually('static');
   const {value: next} = parser.lookAhead();
   const {value: secondNext} = parser.lookAhead(1);
@@ -17,7 +17,7 @@ const parseClassMethod = composeArrityOne(MethodDefinition, (parser) => {
       prop = Object.assign(parsePropertyName(parser), {kind: accessor.rawValue});
     } else {
       prop = {
-        key: parseIdentifierExpression(parser),
+        key: parseBindingIdentifier(parser),
         computed: false
       }
     }
@@ -43,7 +43,7 @@ const parseClassElementList = (parser, elements = []) => {
   }
   return parseClassElementList(parser, elements);
 };
-export const parseClassBody = composeArrityOne(ClassBody, parser => {
+export const parseClassBody = composeArityOne(ClassBody, parser => {
   parser.expect('{');
   const node = {
     body: parseClassElementList(parser)
@@ -66,18 +66,18 @@ const parseClassTail = (parser, id) => {
   };
 };
 
-export const parseClassDeclaration = composeArrityOne(Class, parser => {
+export const parseClassDeclaration = composeArityOne(Class, parser => {
   parser.expect('class');
-  const id = parseIdentifierExpression(parser);
+  const id = parseBindingIdentifier(parser);
   return parseClassTail(parser, id);
 });
 
-export const parseClassExpression = composeArrityOne(ClassExpression, parser => {
+export const parseClassExpression = composeArityOne(ClassExpression, parser => {
   parser.expect('class');
   let id = null;
   const {value: next} = parser.lookAhead();
-  if (next.type === categories.Identifier) {
-    id = parseIdentifierExpression(parser);
+  if (next.type === categories.Identifier && next !== parser.get('extends')) {
+    id = parseBindingIdentifier(parser);
   }
   return parseClassTail(parser, id);
 });

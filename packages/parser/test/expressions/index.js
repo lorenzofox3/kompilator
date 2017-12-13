@@ -16,6 +16,7 @@ import object from './objectLiterals';
 import array from './arrayLiterals';
 import functions from './function';
 import klass from './class';
+import yieldExpression from './yield';
 
 export default zora()
   .test(assignments)
@@ -35,3 +36,4 @@ export default zora()
   .test(array)
   .test(functions)
   .test(klass)
+  .test(yieldExpression)

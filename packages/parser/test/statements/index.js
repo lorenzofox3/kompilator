@@ -20,6 +20,7 @@ import destructuring from './destructuring';
 import letDeclaration from './let';
 import constDeclaration from './const';
 import classDeclaration from './class';
+import modules from './module';
 
 export default zora()
   .test(empty)
@@ -43,4 +44,5 @@ export default zora()
   .test(tryCatch)
   .test(destructuring)
   .test(classDeclaration)
+  .test(modules)
 

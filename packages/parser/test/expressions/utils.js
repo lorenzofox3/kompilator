@@ -1,3 +1,3 @@
-import {parserFactory} from "../../src/index"
-const parseFunc = parserFactory();
-export const parse = code => parseFunc(code).expression();
+import {parseExpression} from "../../src/index"
+
+export const parse = code => parseExpression(code);
