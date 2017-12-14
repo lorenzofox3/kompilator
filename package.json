@@ -4,5 +4,8 @@
 		"rollup": "^0.52.0",
 		"rollup-plugin-node-resolve": "^3.0.0",
 		"zora": "^1.0.1"
+	},
+	"dependencies": {
+		"uglify-es": "^3.2.2"
 	}
 }

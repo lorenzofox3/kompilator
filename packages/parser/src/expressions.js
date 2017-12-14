@@ -4,6 +4,7 @@ import {
 } from "./utils";
 import * as ast from "./ast";
 import {categories} from "../../tokenizer/src/tokens";
+import {toAssignable} from "./asAssign";
 
 // expressions based on Javascript operators whether they are "prefix" or "infix"
 // Note: Functions and Class expressions, Object literals and Array literals are in their own files
@@ -87,6 +88,17 @@ export const parseYieldExpression = Prefix(ast.YieldExpression, parser => {
 
 //infix
 const asBinaryExpression = type => Infix(type, (parser, left, operator) => {
+  return {
+    left,
+    right: parser.expression(parser.getInfixPrecedence(operator)),
+    operator: operator.value
+  };
+});
+export const parseEqualAssignmentExpression = Infix(ast.AssignmentExpression, (parser, left, operator) => {
+  const {type} = left;
+  if (type === 'ArrayExpression' || type === 'ObjectExpression') {
+    toAssignable(left);
+  }
   return {
     left,
     right: parser.expression(parser.getInfixPrecedence(operator)),

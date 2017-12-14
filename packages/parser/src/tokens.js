@@ -4,7 +4,10 @@ import * as statements from './statements';
 import {parseArrayLiteralExpression, parseSpreadExpression} from "./array";
 import {parseObjectLiteralExpression} from "./object";
 import {parseClassDeclaration, parseClassExpression} from "./class";
-import {parseFunctionExpression, parseFunctionDeclaration, parseCallExpression} from "./function";
+import {
+  parseFunctionExpression, parseFunctionDeclaration, parseCallExpression,
+  parseArrowFunctionExpression
+} from "./function";
 import {withEventualSemiColon} from "./utils";
 
 export const ECMAScriptTokenRegistry = () => {
@@ -59,7 +62,7 @@ export const ECMAScriptTokenRegistry = () => {
   //conditional
   infixMap.set(registry.get('?'), {parse: expressions.parseConditionalExpression, precedence: 4});
   //assignment operators
-  infixMap.set(registry.get('='), {parse: expressions.parseAssignmentExpression, precedence: 3});
+  infixMap.set(registry.get('='), {parse: expressions.parseEqualAssignmentExpression, precedence: 3});
   infixMap.set(registry.get('+='), {parse: expressions.parseAssignmentExpression, precedence: 3});
   infixMap.set(registry.get('-='), {parse: expressions.parseAssignmentExpression, precedence: 3});
   infixMap.set(registry.get('*='), {parse: expressions.parseAssignmentExpression, precedence: 3});
@@ -71,6 +74,7 @@ export const ECMAScriptTokenRegistry = () => {
   infixMap.set(registry.get('&='), {parse: expressions.parseAssignmentExpression, precedence: 3});
   infixMap.set(registry.get('^='), {parse: expressions.parseAssignmentExpression, precedence: 3});
   infixMap.set(registry.get('|='), {parse: expressions.parseAssignmentExpression, precedence: 3});
+  infixMap.set(registry.get('=>'), {parse: parseArrowFunctionExpression, precedence: 21}); // fake precedence of 21
   //binary operators
   infixMap.set(registry.get('=='), {parse: expressions.parseBinaryExpression, precedence: 10});
   infixMap.set(registry.get('!='), {parse: expressions.parseBinaryExpression, precedence: 10});
@@ -156,33 +160,41 @@ export const ECMAScriptTokenRegistry = () => {
     isReserved (token) {
       return isLexicallyReserved(token.value);
     },
-    addUnaryOperator(precedence){
-      return this.addPrefixOperator(precedence,expressions.parseUnaryExpression);
+    addUnaryOperator (precedence) {
+      return this.addPrefixOperator(precedence, expressions.parseUnaryExpression);
     },
-    addBinaryOperator(precedence){
-      return this.addPrefixOperator(precedence,expressions.parseBinaryExpression);
+    addBinaryOperator (precedence) {
+      return this.addPrefixOperator(precedence, expressions.parseBinaryExpression);
     },
-    addPrefixOperator(precedence, parseFunction){
+    addPrefixOperator (precedence, parseFunction) {
       throw new Error('not Implemented');
       return {
-        asPunctuator(symbol){},
-        asReservedKeyWord(symbol){},
-        asIdentifierName(symbol){}
+        asPunctuator (symbol) {
+        },
+        asReservedKeyWord (symbol) {
+        },
+        asIdentifierName (symbol) {
+        }
       };
     },
-    addInfixOperator(precendence, parseFunction){
+    addInfixOperator (precendence, parseFunction) {
       throw new Error('not Implemented');
       return {
-        asPunctuator(symbol){},
-        asReservedKeyWord(symbol){},
-        asKeyword(symbol){}
+        asPunctuator (symbol) {
+        },
+        asReservedKeyWord (symbol) {
+        },
+        asKeyword (symbol) {
+        }
       };
     },
-    addStatement(parseFunction){
+    addStatement (parseFunction) {
       throw new Error('not Implemented');
       return {
-        asReservedKeyWord(symbol){},
-        asKeyword(symbol){}
+        asReservedKeyWord (symbol) {
+        },
+        asKeyword (symbol) {
+        }
       };
     }
   });

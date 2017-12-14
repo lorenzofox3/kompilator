@@ -1,8 +1,9 @@
 import * as ast from './ast';
 import {parseBindingIdentifier} from "./expressions";
-import {parseBlockStatement,parseAssignmentPattern, parseBindingIdentifierOrPattern} from "./statements";
+import {parseBlockStatement, parseAssignmentPattern, parseBindingIdentifierOrPattern} from "./statements";
 import {composeArityOne, composeArityTwo} from "./utils";
-import {parseSpreadExpression,parseRestElement} from "./array";
+import {parseSpreadExpression, parseRestElement} from "./array";
+import {toAssignable} from "./asAssign";
 
 // "function" parsing is shared across multiple components and deserves its own module to mutualize code more easily:
 // - as statement aka function declaration
@@ -67,6 +68,7 @@ export const parseFunctionDeclaration = composeArityOne(ast.FunctionDeclaration,
 });
 
 //that is a prefix expression
+//todo we might want to process "parenthesized" expression instead. ie this parser will parse {a},b => a+b whereas it is invalid
 export const parseFunctionExpression = composeArityOne(ast.FunctionExpression, parser => {
   parser.expect('function');
   const generator = parser.eventually('*');
@@ -76,6 +78,22 @@ export const parseFunctionExpression = composeArityOne(ast.FunctionExpression, p
     id = parseBindingIdentifier(parser);
   }
   return Object.assign({id, generator}, parseParamsAndBody(parser));
+});
+const asFormalParameters = (node) => {
+  if (node === null) {
+    return []
+  }
+  return node.type === 'SequenceExpression' ? [...node].map(toAssignable) : [toAssignable(node)];
+};
+
+export const parseArrowFunctionExpression = composeArityTwo(ast.ArrowFunctionExpression, (parser, left) => {
+  const params = asFormalParameters(left);
+  const {value: next} = parser.lookAhead();
+  const body = next === parser.get('{') ? parseBlockStatement(parser) : parser.expression();
+  return {
+    params,
+    body
+  };
 });
 
 //that is an infix expression

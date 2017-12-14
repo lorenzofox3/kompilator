@@ -69,4 +69,37 @@ export default zora()
           }],
       kind: 'var'
     }]);
-  });
+  })
+  .test('parse var foo = 54;', t => {
+    t.deepEqual(parse('var foo = (a,b,c) => a+b+c;').body, [{
+      "type": "VariableDeclaration",
+      "kind": "var",
+      "declarations": [{
+        "type": "VariableDeclarator",
+        "id": {"type": "Identifier", "name": "foo"},
+        "init": {
+          "type": "ArrowFunctionExpression",
+          "expression": true,
+          "async": false,
+          "generator": false,
+          "id": null,
+          "params": [{"type": "Identifier", "name": "a"}, {"type": "Identifier", "name": "b"}, {
+            "type": "Identifier",
+            "name": "c"
+          }],
+          "body": {
+            "type": "BinaryExpression",
+            "left": {
+              "type": "BinaryExpression",
+              "left": {"type": "Identifier", "name": "a"},
+              "right": {"type": "Identifier", "name": "b"},
+              "operator": "+"
+            },
+            "right": {"type": "Identifier", "name": "c"},
+            "operator": "+"
+          }
+        }
+      }]
+    }]);
+  })
+

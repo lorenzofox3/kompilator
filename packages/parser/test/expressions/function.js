@@ -285,3 +285,145 @@ export default zora()
       id: null
     });
   })
+  .test('parse () => {}', t => {
+    t.deepEqual(parse('() => {}'), {
+      type: 'ArrowFunctionExpression',
+      body: {type: 'BlockStatement', body: []},
+      params: [],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })
+  .test('parse a => {}', t => {
+    t.deepEqual(parse('a => {}'), {
+      type: 'ArrowFunctionExpression',
+      body: {type: 'BlockStatement', body: []},
+      params: [{type: 'Identifier', name: 'a'}],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })
+  .test('parse (a) => {}', t => {
+    t.deepEqual(parse('(a) => {}'), {
+      type: 'ArrowFunctionExpression',
+      body: {type: 'BlockStatement', body: []},
+      params: [{type: 'Identifier', name: 'a'}],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })
+  .test('parse ()=>({})', t => {
+    t.deepEqual(parse('()=>({})'), {
+      type: 'ArrowFunctionExpression',
+      body: {type: 'ObjectExpression', properties: []},
+      params: [],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })
+  .test('parse a =>({})', t => {
+    t.deepEqual(parse('a =>({})'), {
+      type: 'ArrowFunctionExpression',
+      body: {type: 'ObjectExpression', properties: []},
+      params: [{type: 'Identifier', name: 'a'}],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })
+  .test('parse a => a', t => {
+    t.deepEqual(parse('a => a'), {
+      type: 'ArrowFunctionExpression',
+      body: {type: 'Identifier', name: 'a'},
+      params: [{type: 'Identifier', name: 'a'}],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })
+  .test('parse a => a+b', t => {
+    t.deepEqual(parse('a => a+b'), {
+      type: 'ArrowFunctionExpression',
+      body:
+        {
+          type: 'BinaryExpression',
+          left: {type: 'Identifier', name: 'a'},
+          right: {type: 'Identifier', name: 'b'},
+          operator: '+'
+        },
+      params: [{type: 'Identifier', name: 'a'}],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })
+  .test('parse (a,b,c,d) => a', t => {
+    t.deepEqual(parse('(a,b) => a'), {
+      type: 'ArrowFunctionExpression',
+      body: {type: 'Identifier', name: 'a'},
+      params:
+        [{type: 'Identifier', name: 'a'},
+          {type: 'Identifier', name: 'b'}],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })
+  .test('parse ({a})=>a', t => {
+    t.deepEqual(parse('({a})=>a'), {
+      type: 'ArrowFunctionExpression',
+      body: {type: 'Identifier', name: 'a'},
+      params:
+        [{
+          type: 'ObjectPattern',
+          properties:
+            [{
+              type: 'Property',
+              key: {type: 'Identifier', name: 'a'},
+              value: {type: 'Identifier', name: 'a'},
+              kind: 'init',
+              computed: false,
+              method: false,
+              shorthand: true
+            }]
+        }],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })
+  .test('parse (a, ...b) => a+b', t => {
+    t.deepEqual(parse('(a, ...b) => a+b'), {
+      type: 'ArrowFunctionExpression',
+      body:
+        {
+          type: 'BinaryExpression',
+          left: {type: 'Identifier', name: 'a'},
+          right: {type: 'Identifier', name: 'b'},
+          operator: '+'
+        },
+      params:
+        [{type: 'Identifier', name: 'a'},
+          {
+            type: 'RestElement',
+            argument: {type: 'Identifier', name: 'b'}
+          }],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })

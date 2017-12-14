@@ -21,6 +21,7 @@ import letDeclaration from './let';
 import constDeclaration from './const';
 import classDeclaration from './class';
 import modules from './module';
+import assign from './asAssign';
 
 export default zora()
   .test(empty)
@@ -45,4 +46,4 @@ export default zora()
   .test(destructuring)
   .test(classDeclaration)
   .test(modules)
-
+  .test(assign)

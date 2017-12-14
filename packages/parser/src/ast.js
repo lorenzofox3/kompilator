@@ -94,7 +94,6 @@ const asBinary = type => nodeFactory(type, yieldLeftRight);
 export const AssignmentExpression = asBinary('AssignmentExpression');
 export const BinaryExpression = asBinary('BinaryExpression');
 export const LogicalExpression = asBinary('LogicalExpression');
-
 export const MemberExpression = nodeFactory('MemberExpression', {
   * [Symbol.iterator] () {
     yield this.object;
@@ -103,12 +102,18 @@ export const MemberExpression = nodeFactory('MemberExpression', {
 });
 export const ConditionalExpression = nodeFactory('ConditionalExpression', iterateCondition);
 export const CallExpression = nodeFactory('CallExpression', iterateCall);
-
 export const SequenceExpression = nodeFactory('SequenceExpression', {
   * [Symbol.iterator] () {
     yield* this.expressions;
   }
 });
+export const ArrowFunctionExpression = nodeFactory({
+  type: 'ArrowFunctionExpression',
+  expression: true,
+  async: false,
+  generator: false,
+  id:null
+}, iterateFunction);
 
 //statements nodes
 export const IfStatement = nodeFactory('IfStatement', iterateCondition);

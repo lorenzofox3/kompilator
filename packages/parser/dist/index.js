@@ -632,7 +632,6 @@ const asBinary = type => nodeFactory(type, yieldLeftRight);
 const AssignmentExpression = asBinary('AssignmentExpression');
 const BinaryExpression = asBinary('BinaryExpression');
 const LogicalExpression = asBinary('LogicalExpression');
-
 const MemberExpression = nodeFactory('MemberExpression', {
   * [Symbol.iterator] () {
     yield this.object;
@@ -641,12 +640,18 @@ const MemberExpression = nodeFactory('MemberExpression', {
 });
 const ConditionalExpression = nodeFactory('ConditionalExpression', iterateCondition);
 const CallExpression = nodeFactory('CallExpression', iterateCall);
-
 const SequenceExpression = nodeFactory('SequenceExpression', {
   * [Symbol.iterator] () {
     yield* this.expressions;
   }
 });
+const ArrowFunctionExpression = nodeFactory({
+  type: 'ArrowFunctionExpression',
+  expression: true,
+  async: false,
+  generator: false,
+  id:null
+}, iterateFunction);
 
 //statements nodes
 const IfStatement = nodeFactory('IfStatement', iterateCondition);
@@ -800,6 +805,63 @@ const ExportAllDeclaration = nodeFactory('ExportAllDeclaration', {
 
 //walk & traverse
 
+/*
+ this convert a node initially parsed as a literal (likely object or array) to an assignment pattern
+ this will mutate node and its descendant to match the new grammar used
+ it occurs in cases where we have parsed as literal first and then encounter a token (such "=" which actually indicates the literal was a pattern)
+ example:
+
+ let a = 3,b =4;
+ [a,b] = [b,a];
+
+ we don't know we have a assignment pattern until we reach the "=" token
+
+ */
+const toAssignable = node => {
+  switch (node.type) {
+    case 'ArrayPattern':
+    case 'ObjectPattern':
+    case 'AssignmentPattern':
+    case 'RestElement':
+    case 'Identifier':
+      break; //skip
+    case 'ArrayExpression': {
+      node.type = 'ArrayPattern';
+      for (let ch of node) {
+        toAssignable(ch); //recursive descent
+      }
+      break;
+    }
+    case 'ObjectExpression': {
+      node.type = 'ObjectPattern';
+      for (let prop of node) {
+        if (prop.kind !== 'init' || prop.method) {
+          throw new Error('can not convert property as a destructuring pattern');
+        }
+        toAssignable(prop.value);
+      }
+      break
+    }
+    case 'SpreadElement': {
+      node.type = 'RestElement';
+      toAssignable(node.argument);
+      break;
+    }
+    case 'AssignmentExpression': {
+      if (node.operator !== '=') {
+        throw new Error('can not reinterpret assignment expression with operator different than "="');
+      }
+      node.type = 'AssignmentPattern';
+      delete node.operator; // operator is not relevant for assignment pattern
+      toAssignable(node.left);//recursive descent
+      break;
+    }
+    default:
+      throw new Error(`Unexpected node could not parse "${node.type}" as part of a destructuring pattern `);
+  }
+  return node;
+};
+
 // expressions based on Javascript operators whether they are "prefix" or "infix"
 // Note: Functions and Class expressions, Object literals and Array literals are in their own files
 
@@ -888,6 +950,17 @@ const asBinaryExpression = type => composeArityThree(type, (parser, left, operat
     operator: operator.value
   };
 });
+const parseEqualAssignmentExpression = composeArityThree(AssignmentExpression, (parser, left, operator) => {
+  const {type} = left;
+  if(type ==='ArrayExpression' || type === 'ObjectExpression'){
+    toAssignable(left);
+  }
+  return {
+    left,
+    right:parser.expression(parser.getInfixPrecedence(operator)),
+    operator:operator.value
+  };
+});
 const parseAssignmentExpression = asBinaryExpression(AssignmentExpression);
 const parseBinaryExpression = asBinaryExpression(BinaryExpression);
 const parseLogicalExpression = asBinaryExpression(LogicalExpression);
@@ -935,7 +1008,6 @@ const parseSequenceExpression = composeArityThree(SequenceExpression, (parser, l
 // "array" parsing is shared across various components:
 // - as array literals
 // - as array pattern
-
 const parseRestElement = composeArityOne(RestElement, parser => {
   parser.expect('...');
   return {
@@ -1080,6 +1152,7 @@ const parseFunctionDeclaration = composeArityOne(FunctionDeclaration, parser => 
 });
 
 //that is a prefix expression
+//todo we might want to process "parenthesized" expression instead. ie this parser will parse {a},b => a+b whereas it is invalid
 const parseFunctionExpression = composeArityOne(FunctionExpression, parser => {
   parser.expect('function');
   const generator = parser.eventually('*');
@@ -1089,6 +1162,22 @@ const parseFunctionExpression = composeArityOne(FunctionExpression, parser => {
     id = parseBindingIdentifier(parser);
   }
   return Object.assign({id, generator}, parseParamsAndBody(parser));
+});
+const asFormalParameters = (node) => {
+  if (node === null) {
+    return []
+  }
+  return node.type === 'SequenceExpression' ? [...node].map(toAssignable) : [toAssignable(node)];
+};
+
+const parseArrowFunctionExpression = composeArityTwo(ArrowFunctionExpression, (parser, left) => {
+  const params = asFormalParameters(left);
+  const {value: next} = parser.lookAhead();
+  const body = next === parser.get('{') ? parseBlockStatement(parser) : parser.expression();
+  return {
+    params,
+    body
+  };
 });
 
 //that is an infix expression
@@ -1141,23 +1230,34 @@ const parsePropertyName = parser => {
     parseLiteralPropertyName(parser)
 };
 
-
 const parsePropertyDefinition = composeArityOne(Property, parser => {
   let {value: next} = parser.lookAhead();
   let prop;
   const {value: secondNext} = parser.lookAhead(1);
 
   //binding reference
-  if (next.type === categories.Identifier && (secondNext === parser.get(',') || secondNext === parser.get('}'))) {
-    const key = parseBindingIdentifier(parser);
-    return {
-      shorthand: true,
-      key,
-      value: key
-    };
+  if (next.type === categories.Identifier) {
+    if ((secondNext === parser.get(',') || secondNext === parser.get('}'))) {
+      const key = parseBindingIdentifier(parser);
+      return {
+        shorthand: true,
+        key,
+        value: key
+      };
+    }
+    //cover Initialized grammar https://tc39.github.io/ecma262/#prod-CoverInitializedName
+    if (secondNext === parser.get('=')) {
+      const key = parseBindingIdentifier(parser);
+      const value = parseAssignmentPattern(parser, key);
+      return {
+        shorthand: true,
+        key,
+        value
+      };
+    }
   }
 
-  //can be a getter/setter or a shorthand binding or a property with init
+  //can be a getter/setter or a shorthand binding or a property with init...
   if (next === parser.get('get') || next === parser.get('set')) {
     const {value: accessor} = parser.next();
     const {value: next} = parser.lookAhead();
@@ -1193,11 +1293,11 @@ const parsePropertyList = (parser, properties = []) => {
   if (nextToken === parser.get('}')) {
     return properties;
   }
-  if (nextToken !== parser.get(',')) {
+
+  if (!parser.eventually(',')) {
     properties.push(parsePropertyDefinition(parser));
-  } else {
-    parser.eat();
   }
+
   return parsePropertyList(parser, properties);
 };
 const parseObjectLiteralExpression = composeArityOne(ObjectExpression, parser => {
@@ -1235,7 +1335,7 @@ const parsePropertyNameProperty = parser => {
 const parseBindingProperty = parser => {
   const {value: next} = parser.lookAhead();
   const property = Property({});
-  return next.type === categories.Identifier ? //identifier but not reserved word
+  return next.type === categories.Identifier && parser.isReserved(next) === false ? //identifier but not reserved word
     Object.assign(property, parseSingleNameBindingProperty(parser)) :
     Object.assign(property, parsePropertyNameProperty(parser));
 };
@@ -1244,10 +1344,8 @@ const parseBindingPropertyList = (parser, properties = []) => {
   if (next === parser.get('}')) {
     return properties;
   }
-  if (next !== parser.get(',')) {
+  if (!parser.eventually(',')) {
     properties.push(parseBindingProperty(parser));
-  } else {
-    parser.eat(); //todo elision not allowed
   }
   return parseBindingPropertyList(parser, properties);
 };
@@ -1888,7 +1986,7 @@ const ECMAScriptTokenRegistry = () => {
   //conditional
   infixMap.set(registry.get('?'), {parse: parseConditionalExpression, precedence: 4});
   //assignment operators
-  infixMap.set(registry.get('='), {parse: parseAssignmentExpression, precedence: 3});
+  infixMap.set(registry.get('='), {parse: parseEqualAssignmentExpression, precedence: 3});
   infixMap.set(registry.get('+='), {parse: parseAssignmentExpression, precedence: 3});
   infixMap.set(registry.get('-='), {parse: parseAssignmentExpression, precedence: 3});
   infixMap.set(registry.get('*='), {parse: parseAssignmentExpression, precedence: 3});
@@ -1900,6 +1998,7 @@ const ECMAScriptTokenRegistry = () => {
   infixMap.set(registry.get('&='), {parse: parseAssignmentExpression, precedence: 3});
   infixMap.set(registry.get('^='), {parse: parseAssignmentExpression, precedence: 3});
   infixMap.set(registry.get('|='), {parse: parseAssignmentExpression, precedence: 3});
+  infixMap.set(registry.get('=>'), {parse: parseArrowFunctionExpression, precedence: 21}); // fake precedence of 21
   //binary operators
   infixMap.set(registry.get('=='), {parse: parseBinaryExpression, precedence: 10});
   infixMap.set(registry.get('!='), {parse: parseBinaryExpression, precedence: 10});
@@ -1985,33 +2084,41 @@ const ECMAScriptTokenRegistry = () => {
     isReserved (token) {
       return isLexicallyReserved(token.value);
     },
-    addUnaryOperator(precedence){
-      return this.addPrefixOperator(precedence,parseUnaryExpression);
+    addUnaryOperator (precedence) {
+      return this.addPrefixOperator(precedence, parseUnaryExpression);
     },
-    addBinaryOperator(precedence){
-      return this.addPrefixOperator(precedence,parseBinaryExpression);
+    addBinaryOperator (precedence) {
+      return this.addPrefixOperator(precedence, parseBinaryExpression);
     },
-    addPrefixOperator(precedence, parseFunction){
+    addPrefixOperator (precedence, parseFunction) {
       throw new Error('not Implemented');
       return {
-        asPunctuator(symbol){},
-        asReservedKeyWord(symbol){},
-        asIdentifierName(symbol){}
+        asPunctuator (symbol) {
+        },
+        asReservedKeyWord (symbol) {
+        },
+        asIdentifierName (symbol) {
+        }
       };
     },
-    addInfixOperator(precendence, parseFunction){
+    addInfixOperator (precendence, parseFunction) {
       throw new Error('not Implemented');
       return {
-        asPunctuator(symbol){},
-        asReservedKeyWord(symbol){},
-        asKeyword(symbol){}
+        asPunctuator (symbol) {
+        },
+        asReservedKeyWord (symbol) {
+        },
+        asKeyword (symbol) {
+        }
       };
     },
-    addStatement(parseFunction){
+    addStatement (parseFunction) {
       throw new Error('not Implemented');
       return {
-        asReservedKeyWord(symbol){},
-        asKeyword(symbol){}
+        asReservedKeyWord (symbol) {
+        },
+        asKeyword (symbol) {
+        }
       };
     }
   });

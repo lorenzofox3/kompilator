@@ -130,3 +130,28 @@ export default zora()
           }]
     });
   })
+  .test('parse [a = b, 4+3, function(){}]', t => {
+    t.deepEqual(parse('[a = b, 4+3, function(){}]'), {
+        "type": "ArrayExpression",
+        "elements": [{
+          "type": "AssignmentExpression",
+          "left": {"type": "Identifier", "name": "a"},
+          "right": {"type": "Identifier", "name": "b"},
+          "operator": "="
+        }, {
+          "type": "BinaryExpression",
+          "left": {"type": "Literal", "value": 4},
+          "right": {"type": "Literal", "value": 3},
+          "operator": "+"
+        }, {
+          "type": "FunctionExpression",
+          "id": null,
+          "async": false,
+          "generator": false,
+          "params": [],
+          "body": {"type": "BlockStatement", "body": []}
+        }]
+      }
+    );
+  })
+

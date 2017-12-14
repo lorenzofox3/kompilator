@@ -1,4 +1,4 @@
-import {Property, ObjectExpression,ObjectPattern, Identifier} from "./ast"
+import {Property, ObjectExpression, ObjectPattern, Identifier} from "./ast"
 import {composeArityOne} from "./utils";
 import {categories} from "../../tokenizer/src/tokens";
 import {parseBindingIdentifier, parseIdentifierName} from "./expressions";
@@ -27,23 +27,34 @@ export const parsePropertyName = parser => {
     parseLiteralPropertyName(parser)
 };
 
-
 const parsePropertyDefinition = composeArityOne(Property, parser => {
   let {value: next} = parser.lookAhead();
   let prop;
   const {value: secondNext} = parser.lookAhead(1);
 
   //binding reference
-  if (next.type === categories.Identifier && (secondNext === parser.get(',') || secondNext === parser.get('}'))) {
-    const key = parseBindingIdentifier(parser);
-    return {
-      shorthand: true,
-      key,
-      value: key
-    };
+  if (next.type === categories.Identifier) {
+    if ((secondNext === parser.get(',') || secondNext === parser.get('}'))) {
+      const key = parseBindingIdentifier(parser);
+      return {
+        shorthand: true,
+        key,
+        value: key
+      };
+    }
+    //cover Initialized grammar https://tc39.github.io/ecma262/#prod-CoverInitializedName
+    if (secondNext === parser.get('=')) {
+      const key = parseBindingIdentifier(parser);
+      const value = parseAssignmentPattern(parser, key);
+      return {
+        shorthand: true,
+        key,
+        value
+      };
+    }
   }
 
-  //can be a getter/setter or a shorthand binding or a property with init
+  //can be a getter/setter or a shorthand binding or a property with init...
   if (next === parser.get('get') || next === parser.get('set')) {
     const {value: accessor} = parser.next();
     const {value: next} = parser.lookAhead();
@@ -79,11 +90,11 @@ const parsePropertyList = (parser, properties = []) => {
   if (nextToken === parser.get('}')) {
     return properties;
   }
-  if (nextToken !== parser.get(',')) {
+
+  if (!parser.eventually(',')) {
     properties.push(parsePropertyDefinition(parser));
-  } else {
-    parser.eat();
   }
+
   return parsePropertyList(parser, properties);
 };
 export const parseObjectLiteralExpression = composeArityOne(ObjectExpression, parser => {
@@ -121,7 +132,7 @@ const parsePropertyNameProperty = parser => {
 const parseBindingProperty = parser => {
   const {value: next} = parser.lookAhead();
   const property = Property({});
-  return next.type === categories.Identifier ? //identifier but not reserved word
+  return next.type === categories.Identifier && parser.isReserved(next) === false ? //identifier but not reserved word
     Object.assign(property, parseSingleNameBindingProperty(parser)) :
     Object.assign(property, parsePropertyNameProperty(parser));
 };
@@ -130,10 +141,8 @@ const parseBindingPropertyList = (parser, properties = []) => {
   if (next === parser.get('}')) {
     return properties;
   }
-  if (next !== parser.get(',')) {
+  if (!parser.eventually(',')) {
     properties.push(parseBindingProperty(parser));
-  } else {
-    parser.eat(); //todo elision not allowed
   }
   return parseBindingPropertyList(parser, properties);
 };
@@ -145,4 +154,3 @@ export const parseObjectBindingPattern = composeArityOne(ObjectPattern, parser =
   parser.expect('}');
   return node;
 });
-

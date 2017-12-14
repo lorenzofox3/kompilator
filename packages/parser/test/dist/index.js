@@ -1013,7 +1013,6 @@ const asBinary = type => nodeFactory(type, yieldLeftRight);
 const AssignmentExpression = asBinary('AssignmentExpression');
 const BinaryExpression = asBinary('BinaryExpression');
 const LogicalExpression = asBinary('LogicalExpression');
-
 const MemberExpression = nodeFactory('MemberExpression', {
   * [Symbol.iterator] () {
     yield this.object;
@@ -1022,12 +1021,18 @@ const MemberExpression = nodeFactory('MemberExpression', {
 });
 const ConditionalExpression = nodeFactory('ConditionalExpression', iterateCondition);
 const CallExpression = nodeFactory('CallExpression', iterateCall);
-
 const SequenceExpression = nodeFactory('SequenceExpression', {
   * [Symbol.iterator] () {
     yield* this.expressions;
   }
 });
+const ArrowFunctionExpression = nodeFactory({
+  type: 'ArrowFunctionExpression',
+  expression: true,
+  async: false,
+  generator: false,
+  id:null
+}, iterateFunction);
 
 //statements nodes
 const IfStatement = nodeFactory('IfStatement', iterateCondition);
@@ -1181,6 +1186,63 @@ const ExportAllDeclaration = nodeFactory('ExportAllDeclaration', {
 
 //walk & traverse
 
+/*
+ this convert a node initially parsed as a literal (likely object or array) to an assignment pattern
+ this will mutate node and its descendant to match the new grammar used
+ it occurs in cases where we have parsed as literal first and then encounter a token (such "=" which actually indicates the literal was a pattern)
+ example:
+
+ let a = 3,b =4;
+ [a,b] = [b,a];
+
+ we don't know we have a assignment pattern until we reach the "=" token
+
+ */
+const toAssignable = node => {
+  switch (node.type) {
+    case 'ArrayPattern':
+    case 'ObjectPattern':
+    case 'AssignmentPattern':
+    case 'RestElement':
+    case 'Identifier':
+      break; //skip
+    case 'ArrayExpression': {
+      node.type = 'ArrayPattern';
+      for (let ch of node) {
+        toAssignable(ch); //recursive descent
+      }
+      break;
+    }
+    case 'ObjectExpression': {
+      node.type = 'ObjectPattern';
+      for (let prop of node) {
+        if (prop.kind !== 'init' || prop.method) {
+          throw new Error('can not convert property as a destructuring pattern');
+        }
+        toAssignable(prop.value);
+      }
+      break
+    }
+    case 'SpreadElement': {
+      node.type = 'RestElement';
+      toAssignable(node.argument);
+      break;
+    }
+    case 'AssignmentExpression': {
+      if (node.operator !== '=') {
+        throw new Error('can not reinterpret assignment expression with operator different than "="');
+      }
+      node.type = 'AssignmentPattern';
+      delete node.operator; // operator is not relevant for assignment pattern
+      toAssignable(node.left);//recursive descent
+      break;
+    }
+    default:
+      throw new Error(`Unexpected node could not parse "${node.type}" as part of a destructuring pattern `);
+  }
+  return node;
+};
+
 // expressions based on Javascript operators whether they are "prefix" or "infix"
 // Note: Functions and Class expressions, Object literals and Array literals are in their own files
 
@@ -1269,6 +1331,17 @@ const asBinaryExpression = type => composeArityThree(type, (parser, left, operat
     operator: operator.value
   };
 });
+const parseEqualAssignmentExpression = composeArityThree(AssignmentExpression, (parser, left, operator) => {
+  const {type} = left;
+  if(type ==='ArrayExpression' || type === 'ObjectExpression'){
+    toAssignable(left);
+  }
+  return {
+    left,
+    right:parser.expression(parser.getInfixPrecedence(operator)),
+    operator:operator.value
+  };
+});
 const parseAssignmentExpression = asBinaryExpression(AssignmentExpression);
 const parseBinaryExpression = asBinaryExpression(BinaryExpression);
 const parseLogicalExpression = asBinaryExpression(LogicalExpression);
@@ -1316,7 +1389,6 @@ const parseSequenceExpression = composeArityThree(SequenceExpression, (parser, l
 // "array" parsing is shared across various components:
 // - as array literals
 // - as array pattern
-
 const parseRestElement = composeArityOne(RestElement, parser => {
   parser.expect('...');
   return {
@@ -1461,6 +1533,7 @@ const parseFunctionDeclaration = composeArityOne(FunctionDeclaration, parser => 
 });
 
 //that is a prefix expression
+//todo we might want to process "parenthesized" expression instead. ie this parser will parse {a},b => a+b whereas it is invalid
 const parseFunctionExpression = composeArityOne(FunctionExpression, parser => {
   parser.expect('function');
   const generator = parser.eventually('*');
@@ -1470,6 +1543,22 @@ const parseFunctionExpression = composeArityOne(FunctionExpression, parser => {
     id = parseBindingIdentifier(parser);
   }
   return Object.assign({id, generator}, parseParamsAndBody(parser));
+});
+const asFormalParameters = (node) => {
+  if (node === null) {
+    return []
+  }
+  return node.type === 'SequenceExpression' ? [...node].map(toAssignable) : [toAssignable(node)];
+};
+
+const parseArrowFunctionExpression = composeArityTwo(ArrowFunctionExpression, (parser, left) => {
+  const params = asFormalParameters(left);
+  const {value: next} = parser.lookAhead();
+  const body = next === parser.get('{') ? parseBlockStatement(parser) : parser.expression();
+  return {
+    params,
+    body
+  };
 });
 
 //that is an infix expression
@@ -1522,23 +1611,34 @@ const parsePropertyName = parser => {
     parseLiteralPropertyName(parser)
 };
 
-
 const parsePropertyDefinition = composeArityOne(Property, parser => {
   let {value: next} = parser.lookAhead();
   let prop;
   const {value: secondNext} = parser.lookAhead(1);
 
   //binding reference
-  if (next.type === categories.Identifier && (secondNext === parser.get(',') || secondNext === parser.get('}'))) {
-    const key = parseBindingIdentifier(parser);
-    return {
-      shorthand: true,
-      key,
-      value: key
-    };
+  if (next.type === categories.Identifier) {
+    if ((secondNext === parser.get(',') || secondNext === parser.get('}'))) {
+      const key = parseBindingIdentifier(parser);
+      return {
+        shorthand: true,
+        key,
+        value: key
+      };
+    }
+    //cover Initialized grammar https://tc39.github.io/ecma262/#prod-CoverInitializedName
+    if (secondNext === parser.get('=')) {
+      const key = parseBindingIdentifier(parser);
+      const value = parseAssignmentPattern(parser, key);
+      return {
+        shorthand: true,
+        key,
+        value
+      };
+    }
   }
 
-  //can be a getter/setter or a shorthand binding or a property with init
+  //can be a getter/setter or a shorthand binding or a property with init...
   if (next === parser.get('get') || next === parser.get('set')) {
     const {value: accessor} = parser.next();
     const {value: next} = parser.lookAhead();
@@ -1574,11 +1674,11 @@ const parsePropertyList = (parser, properties = []) => {
   if (nextToken === parser.get('}')) {
     return properties;
   }
-  if (nextToken !== parser.get(',')) {
+
+  if (!parser.eventually(',')) {
     properties.push(parsePropertyDefinition(parser));
-  } else {
-    parser.eat();
   }
+
   return parsePropertyList(parser, properties);
 };
 const parseObjectLiteralExpression = composeArityOne(ObjectExpression, parser => {
@@ -1616,7 +1716,7 @@ const parsePropertyNameProperty = parser => {
 const parseBindingProperty = parser => {
   const {value: next} = parser.lookAhead();
   const property = Property({});
-  return next.type === categories.Identifier ? //identifier but not reserved word
+  return next.type === categories.Identifier && parser.isReserved(next) === false ? //identifier but not reserved word
     Object.assign(property, parseSingleNameBindingProperty(parser)) :
     Object.assign(property, parsePropertyNameProperty(parser));
 };
@@ -1625,10 +1725,8 @@ const parseBindingPropertyList = (parser, properties = []) => {
   if (next === parser.get('}')) {
     return properties;
   }
-  if (next !== parser.get(',')) {
+  if (!parser.eventually(',')) {
     properties.push(parseBindingProperty(parser));
-  } else {
-    parser.eat(); //todo elision not allowed
   }
   return parseBindingPropertyList(parser, properties);
 };
@@ -1785,6 +1883,8 @@ const parseScript = program => {
   const parse = parserFactory();
   return parse(program).program();
 };
+
+ //alias
 
 const parseNamedImport = (parser, specifiers) => {
   const {value: next} = parser.lookAhead();
@@ -2337,7 +2437,7 @@ const ECMAScriptTokenRegistry = () => {
   //conditional
   infixMap.set(registry.get('?'), {parse: parseConditionalExpression, precedence: 4});
   //assignment operators
-  infixMap.set(registry.get('='), {parse: parseAssignmentExpression, precedence: 3});
+  infixMap.set(registry.get('='), {parse: parseEqualAssignmentExpression, precedence: 3});
   infixMap.set(registry.get('+='), {parse: parseAssignmentExpression, precedence: 3});
   infixMap.set(registry.get('-='), {parse: parseAssignmentExpression, precedence: 3});
   infixMap.set(registry.get('*='), {parse: parseAssignmentExpression, precedence: 3});
@@ -2349,6 +2449,7 @@ const ECMAScriptTokenRegistry = () => {
   infixMap.set(registry.get('&='), {parse: parseAssignmentExpression, precedence: 3});
   infixMap.set(registry.get('^='), {parse: parseAssignmentExpression, precedence: 3});
   infixMap.set(registry.get('|='), {parse: parseAssignmentExpression, precedence: 3});
+  infixMap.set(registry.get('=>'), {parse: parseArrowFunctionExpression, precedence: 21}); // fake precedence of 21
   //binary operators
   infixMap.set(registry.get('=='), {parse: parseBinaryExpression, precedence: 10});
   infixMap.set(registry.get('!='), {parse: parseBinaryExpression, precedence: 10});
@@ -2433,6 +2534,43 @@ const ECMAScriptTokenRegistry = () => {
     },
     isReserved (token) {
       return isLexicallyReserved(token.value);
+    },
+    addUnaryOperator (precedence) {
+      return this.addPrefixOperator(precedence, parseUnaryExpression);
+    },
+    addBinaryOperator (precedence) {
+      return this.addPrefixOperator(precedence, parseBinaryExpression);
+    },
+    addPrefixOperator (precedence, parseFunction) {
+      throw new Error('not Implemented');
+      return {
+        asPunctuator (symbol) {
+        },
+        asReservedKeyWord (symbol) {
+        },
+        asIdentifierName (symbol) {
+        }
+      };
+    },
+    addInfixOperator (precendence, parseFunction) {
+      throw new Error('not Implemented');
+      return {
+        asPunctuator (symbol) {
+        },
+        asReservedKeyWord (symbol) {
+        },
+        asKeyword (symbol) {
+        }
+      };
+    },
+    addStatement (parseFunction) {
+      throw new Error('not Implemented');
+      return {
+        asReservedKeyWord (symbol) {
+        },
+        asKeyword (symbol) {
+        }
+      };
     }
   });
 };
@@ -2583,11 +2721,11 @@ var tokens = plan()
     t.equal(typeof ifToken,'function','token should be mapped to a parse function');
   });
 
-const parse = code => parseExpression$1(code);
+const parse$1 = code => parseExpression$1(code);
 
 var assignments = plan()
   .test('parse x=42', t => {
-    t.deepEqual(parse('x=42'), {
+    t.deepEqual(parse$1('x=42'), {
       "type": "AssignmentExpression",
       "left": {"type": "Identifier", "name": "x"},
       "operator": "=",
@@ -2595,7 +2733,7 @@ var assignments = plan()
     });
   })
   .test('parse (x)=(42)', t => {
-    t.deepEqual(parse('(x)=(42)'), {
+    t.deepEqual(parse$1('(x)=(42)'), {
       "type": "AssignmentExpression",
       "left": {"type": "Identifier", "name": "x"},
       "operator": "=",
@@ -2603,7 +2741,7 @@ var assignments = plan()
     });
   })
   .test('parse ((((((((((((((((((((((((((((((((((((((((a)))))))))))))))))))))))))))))))))))))))) = 0', t => {
-    t.deepEqual(parse('((((((((((((((((((((((((((((((((((((((((a)))))))))))))))))))))))))))))))))))))))) = 0'), {
+    t.deepEqual(parse$1('((((((((((((((((((((((((((((((((((((((((a)))))))))))))))))))))))))))))))))))))))) = 0'), {
       "type": "AssignmentExpression",
       "left": {"type": "Identifier", "name": "a"},
       "operator": "=",
@@ -2611,7 +2749,7 @@ var assignments = plan()
     });
   })
   .test('parse x <<= 2', t => {
-    t.deepEqual(parse('x <<= 2'), {
+    t.deepEqual(parse$1('x <<= 2'), {
       "type": "AssignmentExpression",
       "left": {"type": "Identifier", "name": "x"},
       "operator": "<<=",
@@ -2619,7 +2757,7 @@ var assignments = plan()
     });
   })
   .test('parse eval = 42', t => {
-    t.deepEqual(parse('eval = 42'), {
+    t.deepEqual(parse$1('eval = 42'), {
       "type": "AssignmentExpression",
       "left": {"type": "Identifier", "name": "eval"},
       "operator": "=",
@@ -2627,7 +2765,7 @@ var assignments = plan()
     });
   })
   .test('parse arguments = 42', t => {
-    t.deepEqual(parse('arguments = 42'), {
+    t.deepEqual(parse$1('arguments = 42'), {
       "type": "AssignmentExpression",
       "left": {"type": "Identifier", "name": "arguments"},
       "operator": "=",
@@ -2635,7 +2773,7 @@ var assignments = plan()
     });
   })
   .test('parse x *= 42', t => {
-    t.deepEqual(parse('x *= 42'), {
+    t.deepEqual(parse$1('x *= 42'), {
       "type": "AssignmentExpression",
       "left": {"type": "Identifier", "name": "x"},
       "operator": "*=",
@@ -2643,7 +2781,7 @@ var assignments = plan()
     });
   })
   .test('parse x /= 42', t => {
-    t.deepEqual(parse('x /= 42'), {
+    t.deepEqual(parse$1('x /= 42'), {
       "type": "AssignmentExpression",
       "left": {"type": "Identifier", "name": "x"},
       "operator": "/=",
@@ -2651,7 +2789,7 @@ var assignments = plan()
     });
   })
   .test('parse x %= 42', t => {
-    t.deepEqual(parse('x %= 42'), {
+    t.deepEqual(parse$1('x %= 42'), {
       "type": "AssignmentExpression",
       "left": {"type": "Identifier", "name": "x"},
       "operator": "%=",
@@ -2659,7 +2797,7 @@ var assignments = plan()
     });
   })
   .test('parse x += 42', t => {
-    t.deepEqual(parse('x += 42'), {
+    t.deepEqual(parse$1('x += 42'), {
       "type": "AssignmentExpression",
       "left": {"type": "Identifier", "name": "x"},
       "operator": "+=",
@@ -2667,7 +2805,7 @@ var assignments = plan()
     });
   })
   .test('parse x -= 42', t => {
-    t.deepEqual(parse('x -= 42'), {
+    t.deepEqual(parse$1('x -= 42'), {
       "type": "AssignmentExpression",
       "left": {"type": "Identifier", "name": "x"},
       "operator": "-=",
@@ -2675,7 +2813,7 @@ var assignments = plan()
     });
   })
   .test('parse x <<= 42', t => {
-    t.deepEqual(parse('x <<= 42'), {
+    t.deepEqual(parse$1('x <<= 42'), {
       "type": "AssignmentExpression",
       "left": {"type": "Identifier", "name": "x"},
       "operator": "<<=",
@@ -2683,7 +2821,7 @@ var assignments = plan()
     });
   })
   .test('parse x >>= 42', t => {
-    t.deepEqual(parse('x >>= 42'), {
+    t.deepEqual(parse$1('x >>= 42'), {
       "type": "AssignmentExpression",
       "left": {"type": "Identifier", "name": "x"},
       "operator": ">>=",
@@ -2691,7 +2829,7 @@ var assignments = plan()
     });
   })
   .test('parse x >>>= 42', t => {
-    t.deepEqual(parse('x >>>= 42'), {
+    t.deepEqual(parse$1('x >>>= 42'), {
       "type": "AssignmentExpression",
       "left": {"type": "Identifier", "name": "x"},
       "operator": ">>>=",
@@ -2699,7 +2837,7 @@ var assignments = plan()
     });
   })
   .test('parse x &= 42', t => {
-    t.deepEqual(parse('x &= 42'), {
+    t.deepEqual(parse$1('x &= 42'), {
       "type": "AssignmentExpression",
       "left": {"type": "Identifier", "name": "x"},
       "operator": "&=",
@@ -2707,7 +2845,7 @@ var assignments = plan()
     });
   })
   .test('parse x ^= 42', t => {
-    t.deepEqual(parse('x ^= 42'), {
+    t.deepEqual(parse$1('x ^= 42'), {
       "type": "AssignmentExpression",
       "left": {"type": "Identifier", "name": "x"},
       "operator": "^=",
@@ -2715,7 +2853,7 @@ var assignments = plan()
     });
   })
   .test('parse x |= 42', t => {
-    t.deepEqual(parse('x |= 42'), {
+    t.deepEqual(parse$1('x |= 42'), {
       "type": "AssignmentExpression",
       "left": {"type": "Identifier", "name": "x"},
       "operator": "|=",
@@ -2725,7 +2863,7 @@ var assignments = plan()
 
 var binary = plan()
   .test('parse x == y', t => {
-    t.deepEqual(parse('x == y'), {
+    t.deepEqual(parse$1('x == y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -2733,7 +2871,7 @@ var binary = plan()
     });
   })
   .test('parse x == 5', t => {
-    t.deepEqual(parse('x == 5'), {
+    t.deepEqual(parse$1('x == 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -2741,7 +2879,7 @@ var binary = plan()
     });
   })
   .test('parse x == null', t => {
-    t.deepEqual(parse('x == null'), {
+    t.deepEqual(parse$1('x == null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -2749,7 +2887,7 @@ var binary = plan()
     });
   })
   .test('parse x == false', t => {
-    t.deepEqual(parse('x == false'), {
+    t.deepEqual(parse$1('x == false'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": false},
@@ -2757,7 +2895,7 @@ var binary = plan()
     });
   })
   .test('parse x == "woot woot"', t => {
-    t.deepEqual(parse('x == "woot woot"'), {
+    t.deepEqual(parse$1('x == "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -2765,7 +2903,7 @@ var binary = plan()
     });
   })
   .test('parse x != y', t => {
-    t.deepEqual(parse('x != y'), {
+    t.deepEqual(parse$1('x != y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -2773,7 +2911,7 @@ var binary = plan()
     });
   })
   .test('parse x != 5', t => {
-    t.deepEqual(parse('x != 5'), {
+    t.deepEqual(parse$1('x != 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -2781,7 +2919,7 @@ var binary = plan()
     });
   })
   .test('parse x != null', t => {
-    t.deepEqual(parse('x != null'), {
+    t.deepEqual(parse$1('x != null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -2789,7 +2927,7 @@ var binary = plan()
     });
   })
   .test('parse x != false', t => {
-    t.deepEqual(parse('x != false'), {
+    t.deepEqual(parse$1('x != false'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": false},
@@ -2797,7 +2935,7 @@ var binary = plan()
     });
   })
   .test('parse x != "woot woot"', t => {
-    t.deepEqual(parse('x != "woot woot"'), {
+    t.deepEqual(parse$1('x != "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -2805,7 +2943,7 @@ var binary = plan()
     });
   })
   .test('parse x === y', t => {
-    t.deepEqual(parse('x === y'), {
+    t.deepEqual(parse$1('x === y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -2813,7 +2951,7 @@ var binary = plan()
     });
   })
   .test('parse x === 5', t => {
-    t.deepEqual(parse('x === 5'), {
+    t.deepEqual(parse$1('x === 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -2821,7 +2959,7 @@ var binary = plan()
     });
   })
   .test('parse x === null', t => {
-    t.deepEqual(parse('x === null'), {
+    t.deepEqual(parse$1('x === null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -2829,7 +2967,7 @@ var binary = plan()
     });
   })
   .test('parse x === false', t => {
-    t.deepEqual(parse('x === false'), {
+    t.deepEqual(parse$1('x === false'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": false},
@@ -2837,7 +2975,7 @@ var binary = plan()
     });
   })
   .test('parse x === "woot woot"', t => {
-    t.deepEqual(parse('x === "woot woot"'), {
+    t.deepEqual(parse$1('x === "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -2845,7 +2983,7 @@ var binary = plan()
     });
   })
   .test('parse x !== y', t => {
-    t.deepEqual(parse('x !== y'), {
+    t.deepEqual(parse$1('x !== y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -2853,7 +2991,7 @@ var binary = plan()
     });
   })
   .test('parse x !== 5', t => {
-    t.deepEqual(parse('x !== 5'), {
+    t.deepEqual(parse$1('x !== 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -2861,7 +2999,7 @@ var binary = plan()
     });
   })
   .test('parse x !== null', t => {
-    t.deepEqual(parse('x !== null'), {
+    t.deepEqual(parse$1('x !== null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -2869,7 +3007,7 @@ var binary = plan()
     });
   })
   .test('parse x !== false', t => {
-    t.deepEqual(parse('x !== false'), {
+    t.deepEqual(parse$1('x !== false'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": false},
@@ -2877,7 +3015,7 @@ var binary = plan()
     });
   })
   .test('parse x !== "woot woot"', t => {
-    t.deepEqual(parse('x !== "woot woot"'), {
+    t.deepEqual(parse$1('x !== "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -2885,7 +3023,7 @@ var binary = plan()
     });
   })
   .test('parse x < y', t => {
-    t.deepEqual(parse('x < y'), {
+    t.deepEqual(parse$1('x < y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -2893,7 +3031,7 @@ var binary = plan()
     });
   })
   .test('parse x < 5', t => {
-    t.deepEqual(parse('x < 5'), {
+    t.deepEqual(parse$1('x < 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -2901,7 +3039,7 @@ var binary = plan()
     });
   })
   .test('parse x < null', t => {
-    t.deepEqual(parse('x < null'), {
+    t.deepEqual(parse$1('x < null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -2909,7 +3047,7 @@ var binary = plan()
     });
   })
   .test('parse x < true', t => {
-    t.deepEqual(parse('x < true'), {
+    t.deepEqual(parse$1('x < true'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": true},
@@ -2917,7 +3055,7 @@ var binary = plan()
     });
   })
   .test('parse x < "woot woot"', t => {
-    t.deepEqual(parse('x < "woot woot"'), {
+    t.deepEqual(parse$1('x < "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -2925,7 +3063,7 @@ var binary = plan()
     });
   })
   .test('parse x <= y', t => {
-    t.deepEqual(parse('x <= y'), {
+    t.deepEqual(parse$1('x <= y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -2933,7 +3071,7 @@ var binary = plan()
     });
   })
   .test('parse x <= 5', t => {
-    t.deepEqual(parse('x <= 5'), {
+    t.deepEqual(parse$1('x <= 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -2941,7 +3079,7 @@ var binary = plan()
     });
   })
   .test('parse x <= null', t => {
-    t.deepEqual(parse('x <= null'), {
+    t.deepEqual(parse$1('x <= null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -2949,7 +3087,7 @@ var binary = plan()
     });
   })
   .test('parse x <= true', t => {
-    t.deepEqual(parse('x <= true'), {
+    t.deepEqual(parse$1('x <= true'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": true},
@@ -2957,7 +3095,7 @@ var binary = plan()
     });
   })
   .test('parse x <= "woot woot"', t => {
-    t.deepEqual(parse('x <= "woot woot"'), {
+    t.deepEqual(parse$1('x <= "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -2965,7 +3103,7 @@ var binary = plan()
     });
   })
   .test('parse x > y', t => {
-    t.deepEqual(parse('x > y'), {
+    t.deepEqual(parse$1('x > y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -2973,7 +3111,7 @@ var binary = plan()
     });
   })
   .test('parse x > 5', t => {
-    t.deepEqual(parse('x > 5'), {
+    t.deepEqual(parse$1('x > 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -2981,7 +3119,7 @@ var binary = plan()
     });
   })
   .test('parse x > null', t => {
-    t.deepEqual(parse('x > null'), {
+    t.deepEqual(parse$1('x > null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -2989,7 +3127,7 @@ var binary = plan()
     });
   })
   .test('parse x > true', t => {
-    t.deepEqual(parse('x > true'), {
+    t.deepEqual(parse$1('x > true'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": true},
@@ -2997,7 +3135,7 @@ var binary = plan()
     });
   })
   .test('parse x > "woot woot"', t => {
-    t.deepEqual(parse('x > "woot woot"'), {
+    t.deepEqual(parse$1('x > "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -3005,7 +3143,7 @@ var binary = plan()
     });
   })
   .test('parse x >= y', t => {
-    t.deepEqual(parse('x >= y'), {
+    t.deepEqual(parse$1('x >= y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -3013,7 +3151,7 @@ var binary = plan()
     });
   })
   .test('parse x >= 5', t => {
-    t.deepEqual(parse('x >= 5'), {
+    t.deepEqual(parse$1('x >= 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -3021,7 +3159,7 @@ var binary = plan()
     });
   })
   .test('parse x >= null', t => {
-    t.deepEqual(parse('x >= null'), {
+    t.deepEqual(parse$1('x >= null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -3029,7 +3167,7 @@ var binary = plan()
     });
   })
   .test('parse x >= true', t => {
-    t.deepEqual(parse('x >= true'), {
+    t.deepEqual(parse$1('x >= true'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": true},
@@ -3037,7 +3175,7 @@ var binary = plan()
     });
   })
   .test('parse x >= "woot woot"', t => {
-    t.deepEqual(parse('x >= "woot woot"'), {
+    t.deepEqual(parse$1('x >= "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -3045,7 +3183,7 @@ var binary = plan()
     });
   })
   .test('parse x << y', t => {
-    t.deepEqual(parse('x << y'), {
+    t.deepEqual(parse$1('x << y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -3053,7 +3191,7 @@ var binary = plan()
     });
   })
   .test('parse x << 5', t => {
-    t.deepEqual(parse('x << 5'), {
+    t.deepEqual(parse$1('x << 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -3061,7 +3199,7 @@ var binary = plan()
     });
   })
   .test('parse x << null', t => {
-    t.deepEqual(parse('x << null'), {
+    t.deepEqual(parse$1('x << null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -3069,7 +3207,7 @@ var binary = plan()
     });
   })
   .test('parse x << true', t => {
-    t.deepEqual(parse('x << true'), {
+    t.deepEqual(parse$1('x << true'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": true},
@@ -3077,7 +3215,7 @@ var binary = plan()
     });
   })
   .test('parse x << "woot woot"', t => {
-    t.deepEqual(parse('x << "woot woot"'), {
+    t.deepEqual(parse$1('x << "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -3085,7 +3223,7 @@ var binary = plan()
     });
   })
   .test('parse x >> y', t => {
-    t.deepEqual(parse('x >> y'), {
+    t.deepEqual(parse$1('x >> y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -3093,7 +3231,7 @@ var binary = plan()
     });
   })
   .test('parse x >> 5', t => {
-    t.deepEqual(parse('x >> 5'), {
+    t.deepEqual(parse$1('x >> 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -3101,7 +3239,7 @@ var binary = plan()
     });
   })
   .test('parse x >> null', t => {
-    t.deepEqual(parse('x >> null'), {
+    t.deepEqual(parse$1('x >> null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -3109,7 +3247,7 @@ var binary = plan()
     });
   })
   .test('parse x >> true', t => {
-    t.deepEqual(parse('x >> true'), {
+    t.deepEqual(parse$1('x >> true'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": true},
@@ -3117,7 +3255,7 @@ var binary = plan()
     });
   })
   .test('parse x >> "woot woot"', t => {
-    t.deepEqual(parse('x >> "woot woot"'), {
+    t.deepEqual(parse$1('x >> "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -3125,7 +3263,7 @@ var binary = plan()
     });
   })
   .test('parse x >>> y', t => {
-    t.deepEqual(parse('x >>> y'), {
+    t.deepEqual(parse$1('x >>> y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -3133,7 +3271,7 @@ var binary = plan()
     });
   })
   .test('parse x >>> 5', t => {
-    t.deepEqual(parse('x >>> 5'), {
+    t.deepEqual(parse$1('x >>> 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -3141,7 +3279,7 @@ var binary = plan()
     });
   })
   .test('parse x >>> null', t => {
-    t.deepEqual(parse('x >>> null'), {
+    t.deepEqual(parse$1('x >>> null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -3149,7 +3287,7 @@ var binary = plan()
     });
   })
   .test('parse x >>> true', t => {
-    t.deepEqual(parse('x >>> true'), {
+    t.deepEqual(parse$1('x >>> true'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": true},
@@ -3157,7 +3295,7 @@ var binary = plan()
     });
   })
   .test('parse x >>> "woot woot"', t => {
-    t.deepEqual(parse('x >>> "woot woot"'), {
+    t.deepEqual(parse$1('x >>> "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -3165,7 +3303,7 @@ var binary = plan()
     });
   })
   .test('parse x + y', t => {
-    t.deepEqual(parse('x + y'), {
+    t.deepEqual(parse$1('x + y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -3173,7 +3311,7 @@ var binary = plan()
     });
   })
   .test('parse x + 5', t => {
-    t.deepEqual(parse('x + 5'), {
+    t.deepEqual(parse$1('x + 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -3181,7 +3319,7 @@ var binary = plan()
     });
   })
   .test('parse x + null', t => {
-    t.deepEqual(parse('x + null'), {
+    t.deepEqual(parse$1('x + null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -3189,7 +3327,7 @@ var binary = plan()
     });
   })
   .test('parse x + true', t => {
-    t.deepEqual(parse('x + true'), {
+    t.deepEqual(parse$1('x + true'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": true},
@@ -3197,7 +3335,7 @@ var binary = plan()
     });
   })
   .test('parse x + "woot woot"', t => {
-    t.deepEqual(parse('x + "woot woot"'), {
+    t.deepEqual(parse$1('x + "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -3205,7 +3343,7 @@ var binary = plan()
     });
   })
   .test('parse x - y', t => {
-    t.deepEqual(parse('x - y'), {
+    t.deepEqual(parse$1('x - y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -3213,7 +3351,7 @@ var binary = plan()
     });
   })
   .test('parse x - 5', t => {
-    t.deepEqual(parse('x - 5'), {
+    t.deepEqual(parse$1('x - 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -3221,7 +3359,7 @@ var binary = plan()
     });
   })
   .test('parse x - null', t => {
-    t.deepEqual(parse('x - null'), {
+    t.deepEqual(parse$1('x - null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -3229,7 +3367,7 @@ var binary = plan()
     });
   })
   .test('parse x - true', t => {
-    t.deepEqual(parse('x - true'), {
+    t.deepEqual(parse$1('x - true'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": true},
@@ -3237,7 +3375,7 @@ var binary = plan()
     });
   })
   .test('parse x - "woot woot"', t => {
-    t.deepEqual(parse('x - "woot woot"'), {
+    t.deepEqual(parse$1('x - "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -3245,7 +3383,7 @@ var binary = plan()
     });
   })
   .test('parse x * y', t => {
-    t.deepEqual(parse('x * y'), {
+    t.deepEqual(parse$1('x * y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -3253,7 +3391,7 @@ var binary = plan()
     });
   })
   .test('parse x * 5', t => {
-    t.deepEqual(parse('x * 5'), {
+    t.deepEqual(parse$1('x * 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -3261,7 +3399,7 @@ var binary = plan()
     });
   })
   .test('parse x * null', t => {
-    t.deepEqual(parse('x * null'), {
+    t.deepEqual(parse$1('x * null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -3269,7 +3407,7 @@ var binary = plan()
     });
   })
   .test('parse x * true', t => {
-    t.deepEqual(parse('x * true'), {
+    t.deepEqual(parse$1('x * true'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": true},
@@ -3277,7 +3415,7 @@ var binary = plan()
     });
   })
   .test('parse x * "woot woot"', t => {
-    t.deepEqual(parse('x * "woot woot"'), {
+    t.deepEqual(parse$1('x * "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -3285,7 +3423,7 @@ var binary = plan()
     });
   })
   .test('parse x ** y', t => {
-    t.deepEqual(parse('x ** y'), {
+    t.deepEqual(parse$1('x ** y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -3293,7 +3431,7 @@ var binary = plan()
     });
   })
   .test('parse x ** 5', t => {
-    t.deepEqual(parse('x ** 5'), {
+    t.deepEqual(parse$1('x ** 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -3301,7 +3439,7 @@ var binary = plan()
     });
   })
   .test('parse x ** null', t => {
-    t.deepEqual(parse('x ** null'), {
+    t.deepEqual(parse$1('x ** null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -3309,7 +3447,7 @@ var binary = plan()
     });
   })
   .test('parse x ** true', t => {
-    t.deepEqual(parse('x ** true'), {
+    t.deepEqual(parse$1('x ** true'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": true},
@@ -3317,7 +3455,7 @@ var binary = plan()
     });
   })
   .test('parse x ** "woot woot"', t => {
-    t.deepEqual(parse('x ** "woot woot"'), {
+    t.deepEqual(parse$1('x ** "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -3325,7 +3463,7 @@ var binary = plan()
     });
   })
   .test('parse x / y', t => {
-    t.deepEqual(parse('x / y'), {
+    t.deepEqual(parse$1('x / y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -3333,7 +3471,7 @@ var binary = plan()
     });
   })
   .test('parse x / 5', t => {
-    t.deepEqual(parse('x / 5'), {
+    t.deepEqual(parse$1('x / 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -3341,7 +3479,7 @@ var binary = plan()
     });
   })
   .test('parse x / null', t => {
-    t.deepEqual(parse('x / null'), {
+    t.deepEqual(parse$1('x / null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -3349,7 +3487,7 @@ var binary = plan()
     });
   })
   .test('parse x / true', t => {
-    t.deepEqual(parse('x / true'), {
+    t.deepEqual(parse$1('x / true'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": true},
@@ -3357,7 +3495,7 @@ var binary = plan()
     });
   })
   .test('parse x / "woot woot"', t => {
-    t.deepEqual(parse('x / "woot woot"'), {
+    t.deepEqual(parse$1('x / "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -3365,7 +3503,7 @@ var binary = plan()
     });
   })
   .test('parse x % y', t => {
-    t.deepEqual(parse('x % y'), {
+    t.deepEqual(parse$1('x % y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -3373,7 +3511,7 @@ var binary = plan()
     });
   })
   .test('parse x % 5', t => {
-    t.deepEqual(parse('x % 5'), {
+    t.deepEqual(parse$1('x % 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -3381,7 +3519,7 @@ var binary = plan()
     });
   })
   .test('parse x % null', t => {
-    t.deepEqual(parse('x % null'), {
+    t.deepEqual(parse$1('x % null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -3389,7 +3527,7 @@ var binary = plan()
     });
   })
   .test('parse x % true', t => {
-    t.deepEqual(parse('x % true'), {
+    t.deepEqual(parse$1('x % true'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": true},
@@ -3397,7 +3535,7 @@ var binary = plan()
     });
   })
   .test('parse x % "woot woot"', t => {
-    t.deepEqual(parse('x % "woot woot"'), {
+    t.deepEqual(parse$1('x % "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -3405,7 +3543,7 @@ var binary = plan()
     });
   })
   .test('parse x | y', t => {
-    t.deepEqual(parse('x | y'), {
+    t.deepEqual(parse$1('x | y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -3413,7 +3551,7 @@ var binary = plan()
     });
   })
   .test('parse x | 5', t => {
-    t.deepEqual(parse('x | 5'), {
+    t.deepEqual(parse$1('x | 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -3421,7 +3559,7 @@ var binary = plan()
     });
   })
   .test('parse x | null', t => {
-    t.deepEqual(parse('x | null'), {
+    t.deepEqual(parse$1('x | null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -3429,7 +3567,7 @@ var binary = plan()
     });
   })
   .test('parse x | true', t => {
-    t.deepEqual(parse('x | true'), {
+    t.deepEqual(parse$1('x | true'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": true},
@@ -3437,7 +3575,7 @@ var binary = plan()
     });
   })
   .test('parse x | "woot woot"', t => {
-    t.deepEqual(parse('x | "woot woot"'), {
+    t.deepEqual(parse$1('x | "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -3445,7 +3583,7 @@ var binary = plan()
     });
   })
   .test('parse x & y', t => {
-    t.deepEqual(parse('x & y'), {
+    t.deepEqual(parse$1('x & y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -3453,7 +3591,7 @@ var binary = plan()
     });
   })
   .test('parse x & 5', t => {
-    t.deepEqual(parse('x & 5'), {
+    t.deepEqual(parse$1('x & 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -3461,7 +3599,7 @@ var binary = plan()
     });
   })
   .test('parse x & null', t => {
-    t.deepEqual(parse('x & null'), {
+    t.deepEqual(parse$1('x & null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -3469,7 +3607,7 @@ var binary = plan()
     });
   })
   .test('parse x & true', t => {
-    t.deepEqual(parse('x & true'), {
+    t.deepEqual(parse$1('x & true'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": true},
@@ -3477,7 +3615,7 @@ var binary = plan()
     });
   })
   .test('parse x & "woot woot"', t => {
-    t.deepEqual(parse('x & "woot woot"'), {
+    t.deepEqual(parse$1('x & "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -3485,7 +3623,7 @@ var binary = plan()
     });
   })
   .test('parse x ^ y', t => {
-    t.deepEqual(parse('x ^ y'), {
+    t.deepEqual(parse$1('x ^ y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -3493,7 +3631,7 @@ var binary = plan()
     });
   })
   .test('parse x ^ 5', t => {
-    t.deepEqual(parse('x ^ 5'), {
+    t.deepEqual(parse$1('x ^ 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -3501,7 +3639,7 @@ var binary = plan()
     });
   })
   .test('parse x ^ null', t => {
-    t.deepEqual(parse('x ^ null'), {
+    t.deepEqual(parse$1('x ^ null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -3509,7 +3647,7 @@ var binary = plan()
     });
   })
   .test('parse x ^ false', t => {
-    t.deepEqual(parse('x ^ false'), {
+    t.deepEqual(parse$1('x ^ false'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": false},
@@ -3517,7 +3655,7 @@ var binary = plan()
     });
   })
   .test('parse x ^ "woot woot"', t => {
-    t.deepEqual(parse('x ^ "woot woot"'), {
+    t.deepEqual(parse$1('x ^ "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -3525,7 +3663,7 @@ var binary = plan()
     });
   })
   .test('parse x in y', t => {
-    t.deepEqual(parse('x in y'), {
+    t.deepEqual(parse$1('x in y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -3533,7 +3671,7 @@ var binary = plan()
     });
   })
   .test('parse x in 5', t => {
-    t.deepEqual(parse('x in 5'), {
+    t.deepEqual(parse$1('x in 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -3541,7 +3679,7 @@ var binary = plan()
     });
   })
   .test('parse x in null', t => {
-    t.deepEqual(parse('x in null'), {
+    t.deepEqual(parse$1('x in null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -3549,7 +3687,7 @@ var binary = plan()
     });
   })
   .test('parse x in true', t => {
-    t.deepEqual(parse('x in true'), {
+    t.deepEqual(parse$1('x in true'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": true},
@@ -3557,7 +3695,7 @@ var binary = plan()
     });
   })
   .test('parse x in "woot woot"', t => {
-    t.deepEqual(parse('x in "woot woot"'), {
+    t.deepEqual(parse$1('x in "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -3565,7 +3703,7 @@ var binary = plan()
     });
   })
   .test('parse x instanceof y', t => {
-    t.deepEqual(parse('x instanceof y'), {
+    t.deepEqual(parse$1('x instanceof y'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -3573,7 +3711,7 @@ var binary = plan()
     });
   })
   .test('parse x instanceof 5', t => {
-    t.deepEqual(parse('x instanceof 5'), {
+    t.deepEqual(parse$1('x instanceof 5'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -3581,7 +3719,7 @@ var binary = plan()
     });
   })
   .test('parse x instanceof null', t => {
-    t.deepEqual(parse('x instanceof null'), {
+    t.deepEqual(parse$1('x instanceof null'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -3589,7 +3727,7 @@ var binary = plan()
     });
   })
   .test('parse x instanceof true', t => {
-    t.deepEqual(parse('x instanceof true'), {
+    t.deepEqual(parse$1('x instanceof true'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": true},
@@ -3597,7 +3735,7 @@ var binary = plan()
     });
   })
   .test('parse x instanceof "woot woot"', t => {
-    t.deepEqual(parse('x instanceof "woot woot"'), {
+    t.deepEqual(parse$1('x instanceof "woot woot"'), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -3607,7 +3745,7 @@ var binary = plan()
 
 var unary = plan()
   .test('parse +x', t => {
-    t.deepEqual(parse('+x'), {
+    t.deepEqual(parse$1('+x'), {
       "type": "UnaryExpression",
       "operator": "+",
       "argument": {"type": "Identifier", "name": "x"},
@@ -3615,7 +3753,7 @@ var unary = plan()
     });
   })
   .test('parse +5', t => {
-    t.deepEqual(parse('+5'), {
+    t.deepEqual(parse$1('+5'), {
       "type": "UnaryExpression",
       "operator": "+",
       "argument": {"type": "Literal", "value": 5},
@@ -3623,7 +3761,7 @@ var unary = plan()
     });
   })
   .test('parse +"woot woot"', t => {
-    t.deepEqual(parse('+"woot woot"'), {
+    t.deepEqual(parse$1('+"woot woot"'), {
       "type": "UnaryExpression",
       "operator": "+",
       "argument": {"type": "Literal", "value": "woot woot"},
@@ -3631,7 +3769,7 @@ var unary = plan()
     });
   })
   .test('parse +true', t => {
-    t.deepEqual(parse('+true'), {
+    t.deepEqual(parse$1('+true'), {
       "type": "UnaryExpression",
       "operator": "+",
       "argument": {"type": "Literal", "value": true},
@@ -3639,7 +3777,7 @@ var unary = plan()
     });
   })
   .test('parse +null', t => {
-    t.deepEqual(parse('+null'), {
+    t.deepEqual(parse$1('+null'), {
       "type": "UnaryExpression",
       "operator": "+",
       "argument": {"type": "Literal", "value": null},
@@ -3647,7 +3785,7 @@ var unary = plan()
     });
   })
   .test('parse -x', t => {
-    t.deepEqual(parse('-x'), {
+    t.deepEqual(parse$1('-x'), {
       "type": "UnaryExpression",
       "operator": "-",
       "argument": {"type": "Identifier", "name": "x"},
@@ -3655,7 +3793,7 @@ var unary = plan()
     });
   })
   .test('parse -5', t => {
-    t.deepEqual(parse('-5'), {
+    t.deepEqual(parse$1('-5'), {
       "type": "UnaryExpression",
       "operator": "-",
       "argument": {"type": "Literal", "value": 5},
@@ -3663,7 +3801,7 @@ var unary = plan()
     });
   })
   .test('parse -"woot woot"', t => {
-    t.deepEqual(parse('-"woot woot"'), {
+    t.deepEqual(parse$1('-"woot woot"'), {
       "type": "UnaryExpression",
       "operator": "-",
       "argument": {"type": "Literal", "value": "woot woot"},
@@ -3671,7 +3809,7 @@ var unary = plan()
     });
   })
   .test('parse -true', t => {
-    t.deepEqual(parse('-true'), {
+    t.deepEqual(parse$1('-true'), {
       "type": "UnaryExpression",
       "operator": "-",
       "argument": {"type": "Literal", "value": true},
@@ -3679,7 +3817,7 @@ var unary = plan()
     });
   })
   .test('parse -null', t => {
-    t.deepEqual(parse('-null'), {
+    t.deepEqual(parse$1('-null'), {
       "type": "UnaryExpression",
       "operator": "-",
       "argument": {"type": "Literal", "value": null},
@@ -3687,7 +3825,7 @@ var unary = plan()
     });
   })
   .test('parse !x', t => {
-    t.deepEqual(parse('!x'), {
+    t.deepEqual(parse$1('!x'), {
       "type": "UnaryExpression",
       "operator": "!",
       "argument": {"type": "Identifier", "name": "x"},
@@ -3695,7 +3833,7 @@ var unary = plan()
     });
   })
   .test('parse !5', t => {
-    t.deepEqual(parse('!5'), {
+    t.deepEqual(parse$1('!5'), {
       "type": "UnaryExpression",
       "operator": "!",
       "argument": {"type": "Literal", "value": 5},
@@ -3703,7 +3841,7 @@ var unary = plan()
     });
   })
   .test('parse !"woot woot"', t => {
-    t.deepEqual(parse('!"woot woot"'), {
+    t.deepEqual(parse$1('!"woot woot"'), {
       "type": "UnaryExpression",
       "operator": "!",
       "argument": {"type": "Literal", "value": "woot woot"},
@@ -3711,7 +3849,7 @@ var unary = plan()
     });
   })
   .test('parse !true', t => {
-    t.deepEqual(parse('!true'), {
+    t.deepEqual(parse$1('!true'), {
       "type": "UnaryExpression",
       "operator": "!",
       "argument": {"type": "Literal", "value": true},
@@ -3719,7 +3857,7 @@ var unary = plan()
     });
   })
   .test('parse !null', t => {
-    t.deepEqual(parse('!null'), {
+    t.deepEqual(parse$1('!null'), {
       "type": "UnaryExpression",
       "operator": "!",
       "argument": {"type": "Literal", "value": null},
@@ -3727,7 +3865,7 @@ var unary = plan()
     });
   })
   .test('parse ~x', t => {
-    t.deepEqual(parse('~x'), {
+    t.deepEqual(parse$1('~x'), {
       "type": "UnaryExpression",
       "operator": "~",
       "argument": {"type": "Identifier", "name": "x"},
@@ -3735,7 +3873,7 @@ var unary = plan()
     });
   })
   .test('parse ~5', t => {
-    t.deepEqual(parse('~5'), {
+    t.deepEqual(parse$1('~5'), {
       "type": "UnaryExpression",
       "operator": "~",
       "argument": {"type": "Literal", "value": 5},
@@ -3743,7 +3881,7 @@ var unary = plan()
     });
   })
   .test('parse ~"woot woot"', t => {
-    t.deepEqual(parse('~"woot woot"'), {
+    t.deepEqual(parse$1('~"woot woot"'), {
       "type": "UnaryExpression",
       "operator": "~",
       "argument": {"type": "Literal", "value": "woot woot"},
@@ -3751,7 +3889,7 @@ var unary = plan()
     });
   })
   .test('parse ~true', t => {
-    t.deepEqual(parse('~true'), {
+    t.deepEqual(parse$1('~true'), {
       "type": "UnaryExpression",
       "operator": "~",
       "argument": {"type": "Literal", "value": true},
@@ -3759,7 +3897,7 @@ var unary = plan()
     });
   })
   .test('parse ~null', t => {
-    t.deepEqual(parse('~null'), {
+    t.deepEqual(parse$1('~null'), {
       "type": "UnaryExpression",
       "operator": "~",
       "argument": {"type": "Literal", "value": null},
@@ -3767,7 +3905,7 @@ var unary = plan()
     });
   })
   .test('parse typeof x', t => {
-    t.deepEqual(parse('typeof x'), {
+    t.deepEqual(parse$1('typeof x'), {
       "type": "UnaryExpression",
       "operator": "typeof",
       "argument": {"type": "Identifier", "name": "x"},
@@ -3775,7 +3913,7 @@ var unary = plan()
     });
   })
   .test('parse typeof 5', t => {
-    t.deepEqual(parse('typeof 5'), {
+    t.deepEqual(parse$1('typeof 5'), {
       "type": "UnaryExpression",
       "operator": "typeof",
       "argument": {"type": "Literal", "value": 5},
@@ -3783,7 +3921,7 @@ var unary = plan()
     });
   })
   .test('parse typeof "woot woot"', t => {
-    t.deepEqual(parse('typeof "woot woot"'), {
+    t.deepEqual(parse$1('typeof "woot woot"'), {
       "type": "UnaryExpression",
       "operator": "typeof",
       "argument": {"type": "Literal", "value": "woot woot"},
@@ -3791,7 +3929,7 @@ var unary = plan()
     });
   })
   .test('parse typeof true', t => {
-    t.deepEqual(parse('typeof true'), {
+    t.deepEqual(parse$1('typeof true'), {
       "type": "UnaryExpression",
       "operator": "typeof",
       "argument": {"type": "Literal", "value": true},
@@ -3799,7 +3937,7 @@ var unary = plan()
     });
   })
   .test('parse typeof null', t => {
-    t.deepEqual(parse('typeof null'), {
+    t.deepEqual(parse$1('typeof null'), {
       "type": "UnaryExpression",
       "operator": "typeof",
       "argument": {"type": "Literal", "value": null},
@@ -3807,7 +3945,7 @@ var unary = plan()
     });
   })
   .test('parse void x', t => {
-    t.deepEqual(parse('void x'), {
+    t.deepEqual(parse$1('void x'), {
       "type": "UnaryExpression",
       "operator": "void",
       "argument": {"type": "Identifier", "name": "x"},
@@ -3815,7 +3953,7 @@ var unary = plan()
     });
   })
   .test('parse void 5', t => {
-    t.deepEqual(parse('void 5'), {
+    t.deepEqual(parse$1('void 5'), {
       "type": "UnaryExpression",
       "operator": "void",
       "argument": {"type": "Literal", "value": 5},
@@ -3823,7 +3961,7 @@ var unary = plan()
     });
   })
   .test('parse void "woot woot"', t => {
-    t.deepEqual(parse('void "woot woot"'), {
+    t.deepEqual(parse$1('void "woot woot"'), {
       "type": "UnaryExpression",
       "operator": "void",
       "argument": {"type": "Literal", "value": "woot woot"},
@@ -3831,7 +3969,7 @@ var unary = plan()
     });
   })
   .test('parse void true', t => {
-    t.deepEqual(parse('void true'), {
+    t.deepEqual(parse$1('void true'), {
       "type": "UnaryExpression",
       "operator": "void",
       "argument": {"type": "Literal", "value": true},
@@ -3839,7 +3977,7 @@ var unary = plan()
     });
   })
   .test('parse void null', t => {
-    t.deepEqual(parse('void null'), {
+    t.deepEqual(parse$1('void null'), {
       "type": "UnaryExpression",
       "operator": "void",
       "argument": {"type": "Literal", "value": null},
@@ -3847,7 +3985,7 @@ var unary = plan()
     });
   })
   .test('parse delete x', t => {
-    t.deepEqual(parse('delete x'), {
+    t.deepEqual(parse$1('delete x'), {
       "type": "UnaryExpression",
       "operator": "delete",
       "argument": {"type": "Identifier", "name": "x"},
@@ -3855,7 +3993,7 @@ var unary = plan()
     });
   })
   .test('parse delete 5', t => {
-    t.deepEqual(parse('delete 5'), {
+    t.deepEqual(parse$1('delete 5'), {
       "type": "UnaryExpression",
       "operator": "delete",
       "argument": {"type": "Literal", "value": 5},
@@ -3863,7 +4001,7 @@ var unary = plan()
     });
   })
   .test('parse delete "woot woot"', t => {
-    t.deepEqual(parse('delete "woot woot"'), {
+    t.deepEqual(parse$1('delete "woot woot"'), {
       "type": "UnaryExpression",
       "operator": "delete",
       "argument": {"type": "Literal", "value": "woot woot"},
@@ -3871,7 +4009,7 @@ var unary = plan()
     });
   })
   .test('parse delete true', t => {
-    t.deepEqual(parse('delete true'), {
+    t.deepEqual(parse$1('delete true'), {
       "type": "UnaryExpression",
       "operator": "delete",
       "argument": {"type": "Literal", "value": true},
@@ -3879,7 +4017,7 @@ var unary = plan()
     });
   })
   .test('parse delete null', t => {
-    t.deepEqual(parse('delete null'), {
+    t.deepEqual(parse$1('delete null'), {
       "type": "UnaryExpression",
       "operator": "delete",
       "argument": {"type": "Literal", "value": null},
@@ -3889,12 +4027,12 @@ var unary = plan()
 
 var thisExpr = plan()
   .test('parse this', t => {
-    t.deepEqual(parse('this'), {type: 'ThisExpression'});
+    t.deepEqual(parse$1('this'), {type: 'ThisExpression'});
   });
 
 var logical = plan()
   .test('parse x || y', t => {
-    t.deepEqual(parse('x || y'), {
+    t.deepEqual(parse$1('x || y'), {
       "type": "LogicalExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -3902,7 +4040,7 @@ var logical = plan()
     });
   })
   .test('parse x || 23.4', t => {
-    t.deepEqual(parse('x || 23.4'), {
+    t.deepEqual(parse$1('x || 23.4'), {
       "type": "LogicalExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 23.4},
@@ -3910,7 +4048,7 @@ var logical = plan()
     });
   })
   .test('parse x || null', t => {
-    t.deepEqual(parse('x || null'), {
+    t.deepEqual(parse$1('x || null'), {
       "type": "LogicalExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -3918,7 +4056,7 @@ var logical = plan()
     });
   })
   .test('parse x || false', t => {
-    t.deepEqual(parse('x || false'), {
+    t.deepEqual(parse$1('x || false'), {
       "type": "LogicalExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": false},
@@ -3926,7 +4064,7 @@ var logical = plan()
     });
   })
   .test('parse x || "woot woot"', t => {
-    t.deepEqual(parse('x || "woot woot"'), {
+    t.deepEqual(parse$1('x || "woot woot"'), {
       "type": "LogicalExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -3934,7 +4072,7 @@ var logical = plan()
     });
   })
   .test('parse x && y', t => {
-    t.deepEqual(parse('x && y'), {
+    t.deepEqual(parse$1('x && y'), {
       "type": "LogicalExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -3942,7 +4080,7 @@ var logical = plan()
     });
   })
   .test('parse x && 23.4', t => {
-    t.deepEqual(parse('x && 23.4'), {
+    t.deepEqual(parse$1('x && 23.4'), {
       "type": "LogicalExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 23.4},
@@ -3950,7 +4088,7 @@ var logical = plan()
     });
   })
   .test('parse x && null', t => {
-    t.deepEqual(parse('x && null'), {
+    t.deepEqual(parse$1('x && null'), {
       "type": "LogicalExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -3958,7 +4096,7 @@ var logical = plan()
     });
   })
   .test('parse x && false', t => {
-    t.deepEqual(parse('x && false'), {
+    t.deepEqual(parse$1('x && false'), {
       "type": "LogicalExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": false},
@@ -3966,7 +4104,7 @@ var logical = plan()
     });
   })
   .test('parse x && "woot woot"', t => {
-    t.deepEqual(parse('x && "woot woot"'), {
+    t.deepEqual(parse$1('x && "woot woot"'), {
       "type": "LogicalExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},
@@ -3976,7 +4114,7 @@ var logical = plan()
 
 var member = plan()
   .test('parse a.b', t => {
-    t.deepEqual(parse('a.b'), {
+    t.deepEqual(parse$1('a.b'), {
       "type": "MemberExpression",
       "object": {"type": "Identifier", "name": "a"},
       "computed": false,
@@ -3984,7 +4122,7 @@ var member = plan()
     });
   })
   .test('parse a.catch', t => {
-    t.deepEqual(parse('a.catch'), {
+    t.deepEqual(parse$1('a.catch'), {
       type: 'MemberExpression',
       object: {type: 'Identifier', name: 'a'},
       computed: false,
@@ -3992,7 +4130,7 @@ var member = plan()
     });
   })
   .test('parse foo.in.catch', t => {
-    t.deepEqual(parse('foo.in.catch'),
+    t.deepEqual(parse$1('foo.in.catch'),
       {
         type: 'MemberExpression',
         object:
@@ -4007,7 +4145,7 @@ var member = plan()
       });
   })
   .test('parse a[foo]', t => {
-    t.deepEqual(parse('a[foo]'), {
+    t.deepEqual(parse$1('a[foo]'), {
       "type": "MemberExpression",
       "object": {"type": "Identifier", "name": "a"},
       "computed": true,
@@ -4015,7 +4153,7 @@ var member = plan()
     });
   })
   .test('parse a[2]', t => {
-    t.deepEqual(parse('a[2]'), {
+    t.deepEqual(parse$1('a[2]'), {
       "type": "MemberExpression",
       "object": {"type": "Identifier", "name": "a"},
       "computed": true,
@@ -4023,7 +4161,7 @@ var member = plan()
     });
   })
   .test('parse a[4+4]', t => {
-    t.deepEqual(parse('a[4+4]'), {
+    t.deepEqual(parse$1('a[4+4]'), {
       "type": "MemberExpression",
       "object": {"type": "Identifier", "name": "a"},
       "computed": true,
@@ -4036,7 +4174,7 @@ var member = plan()
     });
   })
   .test('parse a["foo"+"bar"]', t => {
-    t.deepEqual(parse('a["foo"+"bar"]'), {
+    t.deepEqual(parse$1('a["foo"+"bar"]'), {
       "type": "MemberExpression",
       "object": {"type": "Identifier", "name": "a"},
       "computed": true,
@@ -4051,7 +4189,7 @@ var member = plan()
 
 var update = plan()
   .test('parse a++', t => {
-    t.deepEqual(parse('a++'), {
+    t.deepEqual(parse$1('a++'), {
       "type": "UpdateExpression",
       "argument": {"type": "Identifier", "name": "a"},
       "operator": "++",
@@ -4059,7 +4197,7 @@ var update = plan()
     });
   })
   .test('parse ++a', t => {
-    t.deepEqual(parse('++a'), {
+    t.deepEqual(parse$1('++a'), {
       "type": "UpdateExpression",
       "operator": "++",
       "prefix": true,
@@ -4067,7 +4205,7 @@ var update = plan()
     });
   })
   .test('parse --a', t => {
-    t.deepEqual(parse('--a'), {
+    t.deepEqual(parse$1('--a'), {
       "type": "UpdateExpression",
       "operator": "--",
       "prefix": true,
@@ -4075,7 +4213,7 @@ var update = plan()
     });
   })
   .test('parse a--', t => {
-    t.deepEqual(parse('a--'), {
+    t.deepEqual(parse$1('a--'), {
       "type": "UpdateExpression",
       "argument": {"type": "Identifier", "name": "a"},
       "operator": "--",
@@ -4085,139 +4223,139 @@ var update = plan()
 
 var literals = plan()
   .test('parse 0x3F3a', t => {
-    t.deepEqual(parse('0x3F3a'), {"type": "Literal", "value": 0x3F3a});
+    t.deepEqual(parse$1('0x3F3a'), {"type": "Literal", "value": 0x3F3a});
   })
   .test('parse 0X3F3a', t => {
-    t.deepEqual(parse('0X3F3a'), {"type": "Literal", "value": 0X3F3a});
+    t.deepEqual(parse$1('0X3F3a'), {"type": "Literal", "value": 0X3F3a});
   })
   .test('parse 0o3705', t => {
-    t.deepEqual(parse('0o3705'), {"type": "Literal", "value": 0o3705});
+    t.deepEqual(parse$1('0o3705'), {"type": "Literal", "value": 0o3705});
   })
   .test('parse 0O3705', t => {
-    t.deepEqual(parse('0O3705'), {"type": "Literal", "value": 0O3705});
+    t.deepEqual(parse$1('0O3705'), {"type": "Literal", "value": 0O3705});
   })
   .test('parse 0b0101011', t => {
-    t.deepEqual(parse('0b0101011'), {"type": "Literal", "value": 0b0101011});
+    t.deepEqual(parse$1('0b0101011'), {"type": "Literal", "value": 0b0101011});
   })
   .test('parse 0B0101011', t => {
-    t.deepEqual(parse('0B0101011'), {"type": "Literal", "value": 0B0101011});
+    t.deepEqual(parse$1('0B0101011'), {"type": "Literal", "value": 0B0101011});
   })
   .test('parse 123', t => {
-    t.deepEqual(parse('123'), {"type": "Literal", "value": 123});
+    t.deepEqual(parse$1('123'), {"type": "Literal", "value": 123});
   })
   .test('parse 023', t => {
-    t.deepEqual(parse('023'), {"type": "Literal", "value": 23});
+    t.deepEqual(parse$1('023'), {"type": "Literal", "value": 23});
   })
   .test('parse 34.', t => {
-    t.deepEqual(parse('34.'), {"type": "Literal", "value": 34});
+    t.deepEqual(parse$1('34.'), {"type": "Literal", "value": 34});
   })
   .test('parse .3435', t => {
-    t.deepEqual(parse('.3435'), {"type": "Literal", "value": 0.3435});
+    t.deepEqual(parse$1('.3435'), {"type": "Literal", "value": 0.3435});
   })
   .test('parse 345.767', t => {
-    t.deepEqual(parse('345.767'), {"type": "Literal", "value": 345.767});
+    t.deepEqual(parse$1('345.767'), {"type": "Literal", "value": 345.767});
   })
   .test('parse .34e-1', t => {
-    t.deepEqual(parse('.34e-1'), {"type": "Literal", "value": 0.034});
+    t.deepEqual(parse$1('.34e-1'), {"type": "Literal", "value": 0.034});
   })
   .test('parse .34E-1', t => {
-    t.deepEqual(parse('.34E-1'), {"type": "Literal", "value": 0.034});
+    t.deepEqual(parse$1('.34E-1'), {"type": "Literal", "value": 0.034});
   })
   .test('parse .65e+3', t => {
-    t.deepEqual(parse('.65e+3'), {"type": "Literal", "value": 650});
+    t.deepEqual(parse$1('.65e+3'), {"type": "Literal", "value": 650});
   })
   .test('parse .6E+3', t => {
-    t.deepEqual(parse('.6E+3'), {"type": "Literal", "value": 600});
+    t.deepEqual(parse$1('.6E+3'), {"type": "Literal", "value": 600});
   })
   .test('parse .86e4', t => {
-    t.deepEqual(parse('.86e4'), {"type": "Literal", "value": 8600});
+    t.deepEqual(parse$1('.86e4'), {"type": "Literal", "value": 8600});
   })
   .test('parse .34E4', t => {
-    t.deepEqual(parse('.34E4'), {"type": "Literal", "value": 3400});
+    t.deepEqual(parse$1('.34E4'), {"type": "Literal", "value": 3400});
   })
   .test('parse 4545.4545e+5', t => {
-    t.deepEqual(parse('4545.4545e+5'), {"type": "Literal", "value": 454545450});
+    t.deepEqual(parse$1('4545.4545e+5'), {"type": "Literal", "value": 454545450});
   })
   .test('parse 4545.4545E+5', t => {
-    t.deepEqual(parse('4545.4545E+5'), {"type": "Literal", "value": 454545450});
+    t.deepEqual(parse$1('4545.4545E+5'), {"type": "Literal", "value": 454545450});
   })
   .test('parse 4545.4545e5', t => {
-    t.deepEqual(parse('4545.4545e5'), {"type": "Literal", "value": 454545450});
+    t.deepEqual(parse$1('4545.4545e5'), {"type": "Literal", "value": 454545450});
   })
   .test('parse 4545.4545E5', t => {
-    t.deepEqual(parse('4545.4545E5'), {"type": "Literal", "value": 454545450});
+    t.deepEqual(parse$1('4545.4545E5'), {"type": "Literal", "value": 454545450});
   })
   .test('parse 4545.4545e-5', t => {
-    t.deepEqual(parse('4545.4545e-5'), {"type": "Literal", "value": 0.045454545});
+    t.deepEqual(parse$1('4545.4545e-5'), {"type": "Literal", "value": 0.045454545});
   })
   .test('parse 4545.4545E-5', t => {
-    t.deepEqual(parse('4545.4545E-5'), {"type": "Literal", "value": 0.045454545});
+    t.deepEqual(parse$1('4545.4545E-5'), {"type": "Literal", "value": 0.045454545});
   })
   .test('parse 34e+5', t => {
-    t.deepEqual(parse('34e+5'), {"type": "Literal", "value": 3400000});
+    t.deepEqual(parse$1('34e+5'), {"type": "Literal", "value": 3400000});
   })
   .test('parse 34E+5', t => {
-    t.deepEqual(parse('34E+5'), {"type": "Literal", "value": 3400000});
+    t.deepEqual(parse$1('34E+5'), {"type": "Literal", "value": 3400000});
   })
   .test('parse 34e5', t => {
-    t.deepEqual(parse('34e5'), {"type": "Literal", "value": 3400000});
+    t.deepEqual(parse$1('34e5'), {"type": "Literal", "value": 3400000});
   })
   .test('parse 34E5', t => {
-    t.deepEqual(parse('34E5'), {"type": "Literal", "value": 3400000});
+    t.deepEqual(parse$1('34E5'), {"type": "Literal", "value": 3400000});
   })
   .test('parse 34e-5', t => {
-    t.deepEqual(parse('34e-5'), {"type": "Literal", "value": 0.00034});
+    t.deepEqual(parse$1('34e-5'), {"type": "Literal", "value": 0.00034});
   })
   .test('parse 34E-5', t => {
-    t.deepEqual(parse('34E-5'), {"type": "Literal", "value": 0.00034});
+    t.deepEqual(parse$1('34E-5'), {"type": "Literal", "value": 0.00034});
   })
   .test('parse \'foo\'', t => {
-    t.deepEqual(parse('\'foo\''), {"type": "Literal", "value": "foo"});
+    t.deepEqual(parse$1('\'foo\''), {"type": "Literal", "value": "foo"});
   })
   .test('parse "foo"', t => {
-    t.deepEqual(parse('"foo"'), {"type": "Literal", "value": "foo"});
+    t.deepEqual(parse$1('"foo"'), {"type": "Literal", "value": "foo"});
   })
   .test('parse true', t => {
-    t.deepEqual(parse('true'), {"type": "Literal", "value": true});
+    t.deepEqual(parse$1('true'), {"type": "Literal", "value": true});
   })
   .test('parse false', t => {
-    t.deepEqual(parse('false'), {"type": "Literal", "value": false});
+    t.deepEqual(parse$1('false'), {"type": "Literal", "value": false});
   })
   .test('parse null', t => {
-    t.deepEqual(parse('null'), {"type": "Literal", "value": null});
+    t.deepEqual(parse$1('null'), {"type": "Literal", "value": null});
   })
   .test('parse /foo/i', t => {
-    t.deepEqual(parse('/foo/i'), {
+    t.deepEqual(parse$1('/foo/i'), {
       type: 'Literal',
       value: /foo/i,
       regex: {pattern: 'foo', flags: 'i'}
     });
   })
   .test('parse /foo/', t => {
-    t.deepEqual(parse('/foo/'), {
+    t.deepEqual(parse$1('/foo/'), {
       type: 'Literal',
       value: /foo/,
       regex: {pattern: 'foo', flags: ''}
     });
   })
   .test('parse /[0-9]*/i', t => {
-    t.deepEqual(parse('/[0-9]*/i'), {
+    t.deepEqual(parse$1('/[0-9]*/i'), {
       type: 'Literal',
       value: /[0-9]*/i,
       regex: {pattern: '[0-9]*', flags: 'i'}
     });
   })
   .test('parse /foo/gi', t => {
-    t.deepEqual(parse('/foo/gi'), {"type": "Literal", "value": {}, "regex": {"pattern": "foo", "flags": "gi"}});
+    t.deepEqual(parse$1('/foo/gi'), {"type": "Literal", "value": {}, "regex": {"pattern": "foo", "flags": "gi"}});
   })
   .test('parse (")")', t => {
-    t.deepEqual(parse('(")")'), {"type": "Literal", "value": ")"}
+    t.deepEqual(parse$1('(")")'), {"type": "Literal", "value": ")"}
     );
   });
 
 var conditionals = plan()
   .test('parse a ? b : c', t => {
-    t.deepEqual(parse('a ? b : c'), {
+    t.deepEqual(parse$1('a ? b : c'), {
       "type": "ConditionalExpression",
       "test": {"type": "Identifier", "name": "a"},
       "consequent": {"type": "Identifier", "name": "b"},
@@ -4225,7 +4363,7 @@ var conditionals = plan()
     });
   })
   .test('parse true ? "foo" : 3.34', t => {
-    t.deepEqual(parse('true ? "foo" : 3.34'), {
+    t.deepEqual(parse$1('true ? "foo" : 3.34'), {
       "type": "ConditionalExpression",
       "test": {"type": "Literal", "value": true},
       "consequent": {"type": "Literal", "value": "foo"},
@@ -4233,7 +4371,7 @@ var conditionals = plan()
     });
   })
   .test('parse a ? b ? c : d : e', t => {
-    t.deepEqual(parse('a ? b ? c : d : e'), {
+    t.deepEqual(parse$1('a ? b ? c : d : e'), {
       "type": "ConditionalExpression",
       "test": {"type": "Identifier", "name": "a"},
       "consequent": {
@@ -4248,35 +4386,35 @@ var conditionals = plan()
 
 var call = plan()
   .test('parse foo()', t => {
-    t.deepEqual(parse('foo()'), {
+    t.deepEqual(parse$1('foo()'), {
       "type": "CallExpression",
       "callee": {"type": "Identifier", "name": "foo"},
       "arguments": []
     });
   })
   .test('parse foo(a)', t => {
-    t.deepEqual(parse('foo(a)'), {
+    t.deepEqual(parse$1('foo(a)'), {
       "type": "CallExpression",
       "callee": {"type": "Identifier", "name": "foo"},
       "arguments": [{"type": "Identifier", "name": "a"}]
     });
   })
   .test('parse foo(a,)', t => {
-    t.deepEqual(parse('foo(a,)'), {
+    t.deepEqual(parse$1('foo(a,)'), {
       "type": "CallExpression",
       "callee": {"type": "Identifier", "name": "foo"},
       "arguments": [{"type": "Identifier", "name": "a"}]
     });
   })
   .test('parse foo(a,b)', t => {
-    t.deepEqual(parse('foo(a,b)'), {
+    t.deepEqual(parse$1('foo(a,b)'), {
       "type": "CallExpression",
       "callee": {"type": "Identifier", "name": "foo"},
       "arguments": [{"type": "Identifier", "name": "a"}, {"type": "Identifier", "name": "b"}]
     });
   })
   .test('parse foo(a,b,c)', t => {
-    t.deepEqual(parse('foo(a,b,c)'), {
+    t.deepEqual(parse$1('foo(a,b,c)'), {
       "type": "CallExpression",
       "callee": {"type": "Identifier", "name": "foo"},
       "arguments": [{"type": "Identifier", "name": "a"}, {"type": "Identifier", "name": "b"}, {
@@ -4286,7 +4424,7 @@ var call = plan()
     });
   })
   .test('parse foo(0.3,"foo",true,null)', t => {
-    t.deepEqual(parse('foo(0.3,"foo",true,null)'), {
+    t.deepEqual(parse$1('foo(0.3,"foo",true,null)'), {
       "type": "CallExpression",
       "callee": {"type": "Identifier", "name": "foo"},
       "arguments": [{"type": "Literal", "value": 0.3}, {"type": "Literal", "value": "foo"}, {
@@ -4296,7 +4434,7 @@ var call = plan()
     });
   })
   .test('parse f.g()', t => {
-    t.deepEqual(parse('f.g()'), {
+    t.deepEqual(parse$1('f.g()'), {
       type: 'CallExpression',
       callee:
         {
@@ -4309,7 +4447,7 @@ var call = plan()
     });
   })
   .test('parse f.g(a)', t => {
-    t.deepEqual(parse('f.g(a)'), {
+    t.deepEqual(parse$1('f.g(a)'), {
       type: 'CallExpression',
       callee:
         {
@@ -4322,7 +4460,7 @@ var call = plan()
     });
   })
   .test('parse f.g(a, b, c)', t => {
-    t.deepEqual(parse('f.g(a, b, c)'), {
+    t.deepEqual(parse$1('f.g(a, b, c)'), {
       type: 'CallExpression',
       callee:
         {
@@ -4338,7 +4476,7 @@ var call = plan()
     });
   })
   .test('parse f.g.h(a,b,b)', t => {
-    t.deepEqual(parse('f.g.h(a,b,b)'), {
+    t.deepEqual(parse$1('f.g.h(a,b,b)'), {
       type: 'CallExpression',
       callee:
         {
@@ -4360,7 +4498,7 @@ var call = plan()
     });
   })
   .test('parse f(...a)', t => {
-    t.deepEqual(parse('f(...a)'), {
+    t.deepEqual(parse$1('f(...a)'), {
       type: 'CallExpression',
       callee: {type: 'Identifier', name: 'f'},
       arguments:
@@ -4371,7 +4509,7 @@ var call = plan()
     });
   })
   .test('parse f(a,...b)', t => {
-    t.deepEqual(parse('f(a,...b)'), {
+    t.deepEqual(parse$1('f(a,...b)'), {
       type: 'CallExpression',
       callee: {type: 'Identifier', name: 'f'},
       arguments:
@@ -4383,7 +4521,7 @@ var call = plan()
     });
   })
   .test('parse f(a,...b,)', t => {
-    t.deepEqual(parse('f(a,...b,)'), {
+    t.deepEqual(parse$1('f(a,...b,)'), {
       type: 'CallExpression',
       callee: {type: 'Identifier', name: 'f'},
       arguments:
@@ -4397,28 +4535,28 @@ var call = plan()
 
 var news = plan()
   .test('parse new a;', t => {
-    t.deepEqual(parse('new a;'), {
+    t.deepEqual(parse$1('new a;'), {
       type: 'NewExpression',
       callee: {type: 'Identifier', name: 'a'},
       arguments: []
     });
   })
   .test('parse new a();', t => {
-    t.deepEqual(parse('new a();'), {
+    t.deepEqual(parse$1('new a();'), {
       type: 'NewExpression',
       callee: {type: 'Identifier', name: 'a'},
       arguments: []
     });
   })
   .test('parse new a(b);', t => {
-    t.deepEqual(parse('new a(b);'), {
+    t.deepEqual(parse$1('new a(b);'), {
       type: 'NewExpression',
       callee: {type: 'Identifier', name: 'a'},
       arguments: [{type: 'Identifier', name: 'b'}]
     });
   })
   .test('parse new a(b,c);', t => {
-    t.deepEqual(parse('new a(b,c);'), {
+    t.deepEqual(parse$1('new a(b,c);'), {
       type: 'NewExpression',
       callee: {type: 'Identifier', name: 'a'},
       arguments:
@@ -4427,7 +4565,7 @@ var news = plan()
     });
   })
   .test('parse new a(b,c,d);', t => {
-    t.deepEqual(parse('new a(b,c,d);'), {
+    t.deepEqual(parse$1('new a(b,c,d);'), {
       type: 'NewExpression',
       callee: {type: 'Identifier', name: 'a'},
       arguments:
@@ -4437,7 +4575,7 @@ var news = plan()
     });
   })
   .test('parse new a.b();', t => {
-    t.deepEqual(parse('new a.b();'), {
+    t.deepEqual(parse$1('new a.b();'), {
       type: 'NewExpression',
       callee:
         {
@@ -4450,7 +4588,7 @@ var news = plan()
     });
   })
   .test('parse new a.b(c);', t => {
-    t.deepEqual(parse('new a.b(c);'), {
+    t.deepEqual(parse$1('new a.b(c);'), {
       type: 'NewExpression',
       callee:
         {
@@ -4463,7 +4601,7 @@ var news = plan()
     });
   })
   .test('parse new a.b(c,d);', t => {
-    t.deepEqual(parse('new a.b(c,d);'), {
+    t.deepEqual(parse$1('new a.b(c,d);'), {
       type: 'NewExpression',
       callee:
         {
@@ -4478,7 +4616,7 @@ var news = plan()
     });
   })
   .test('parse new a.b(c,d,e);', t => {
-    t.deepEqual(parse('new a.b(c,d,e);'), {
+    t.deepEqual(parse$1('new a.b(c,d,e);'), {
       type: 'NewExpression',
       callee:
         {
@@ -4494,7 +4632,7 @@ var news = plan()
     });
   })
   .test('parse new a.b;', t => {
-    t.deepEqual(parse('new a.b;'), {
+    t.deepEqual(parse$1('new a.b;'), {
       type: 'NewExpression',
       callee:
         {
@@ -4509,7 +4647,7 @@ var news = plan()
 
 var precedences = plan()
   .test('parse foo += bar || blah && bim | woot ^ "true" & 34 !== hey < bim >>> 4 + true * blam ** !nope.test++ ', t => {
-    t.deepEqual(parse('foo += bar || blah && bim | woot ^ "true" & 34 !== hey < bim >>> 4 + true * blam ** !nope.test++ '), {
+    t.deepEqual(parse$1('foo += bar || blah && bim | woot ^ "true" & 34 !== hey < bim >>> 4 + true * blam ** !nope.test++ '), {
       type: 'AssignmentExpression',
       left: {type: 'Identifier', name: 'foo'},
       operator: '+=',
@@ -4601,7 +4739,7 @@ var precedences = plan()
     });
   })
   .test('parse foo = 4 + bar * test', t => {
-    t.deepEqual(parse('foo = 4 + bar * test'), {
+    t.deepEqual(parse$1('foo = 4 + bar * test'), {
       type: 'AssignmentExpression',
       left: {type: 'Identifier', name: 'foo'},
       operator: '=',
@@ -4621,7 +4759,7 @@ var precedences = plan()
     });
   })
   .test('parse foo = (4 + bar) * test', t => {
-    t.deepEqual(parse('foo = (4 + bar) * test'), {
+    t.deepEqual(parse$1('foo = (4 + bar) * test'), {
       type: 'AssignmentExpression',
       left: {type: 'Identifier', name: 'foo'},
       operator: '=',
@@ -4641,7 +4779,7 @@ var precedences = plan()
     });
   })
   .test('parse foo = bar * test + 4', t => {
-    t.deepEqual(parse('foo = bar * test + 4'), {
+    t.deepEqual(parse$1('foo = bar * test + 4'), {
       type: 'AssignmentExpression',
       left: {type: 'Identifier', name: 'foo'},
       operator: '=',
@@ -4661,7 +4799,7 @@ var precedences = plan()
     });
   })
   .test(`parse typeof obj === 'Object'`, t => {
-    t.deepEqual(parse('typeof obj === \'Object\''), {
+    t.deepEqual(parse$1('typeof obj === \'Object\''), {
         "type": "BinaryExpression",
         "left": {
           "type": "UnaryExpression",
@@ -4675,7 +4813,7 @@ var precedences = plan()
     );
   })
   .test(`parse new foo() + bar`, t => {
-    t.deepEqual(parse('new foo() + bar'), {
+    t.deepEqual(parse$1('new foo() + bar'), {
         type: 'BinaryExpression',
         left: {
           type: 'NewExpression',
@@ -4690,7 +4828,7 @@ var precedences = plan()
 
 var sequence = plan()
   .test(`parse a =0,b++;`, t => {
-    t.deepEqual(parse('a=0,b++;'), {
+    t.deepEqual(parse$1('a=0,b++;'), {
         type: 'SequenceExpression',
         expressions:
           [{
@@ -4709,13 +4847,13 @@ var sequence = plan()
     );
   })
   .test(`parse a,b;`, t => {
-    t.deepEqual(parse('a,b;'), {
+    t.deepEqual(parse$1('a,b;'), {
       "type": "SequenceExpression",
       "expressions": [{"type": "Identifier", "name": "a"}, {"type": "Identifier", "name": "b"}]
     });
   })
   .test(`parse a,b,c;`, t => {
-    t.deepEqual(parse('a,b,c;'), {
+    t.deepEqual(parse$1('a,b,c;'), {
       "type": "SequenceExpression",
       "expressions": [{"type": "Identifier", "name": "a"}, {"type": "Identifier", "name": "b"}, {
         "type": "Identifier",
@@ -4726,10 +4864,10 @@ var sequence = plan()
 
 var object = plan()
   .test('parse expression {}', t => {
-    t.deepEqual(parse('{}'), {type: 'ObjectExpression', properties: []});
+    t.deepEqual(parse$1('{}'), {type: 'ObjectExpression', properties: []});
   })
   .test('parse expression {a:true}', t => {
-    t.deepEqual(parse('{a:true}'), {
+    t.deepEqual(parse$1('{a:true}'), {
       type: 'ObjectExpression',
       properties:
         [{
@@ -4744,7 +4882,7 @@ var object = plan()
     });
   })
   .test('parse expression {catch:true, throw:foo}', t => {
-    t.deepEqual(parse('{catch:true, throw:foo}'), {
+    t.deepEqual(parse$1('{catch:true, throw:foo}'), {
       "type": "ObjectExpression",
       "properties": [{
         "type": "Property",
@@ -4766,7 +4904,7 @@ var object = plan()
     });
   })
   .test(`parse expression {'a':foo}`, t => {
-    t.deepEqual(parse(`{'a':foo}`), {
+    t.deepEqual(parse$1(`{'a':foo}`), {
       type: 'ObjectExpression',
       properties:
         [{
@@ -4781,7 +4919,7 @@ var object = plan()
     });
   })
   .test(`parse expression = {1:'test'}`, t => {
-    t.deepEqual(parse(`{1:'test'}`), {
+    t.deepEqual(parse$1(`{1:'test'}`), {
       type: 'ObjectExpression',
       properties:
         [{
@@ -4796,7 +4934,7 @@ var object = plan()
     });
   })
   .test('parse expression {a:b}', t => {
-    t.deepEqual(parse('{a:b}'), {
+    t.deepEqual(parse$1('{a:b}'), {
       type: 'ObjectExpression',
       properties:
         [{
@@ -4811,7 +4949,7 @@ var object = plan()
     });
   })
   .test('parse expression {a:b,c:d}', t => {
-    t.deepEqual(parse('{a:b,c:d}'), {
+    t.deepEqual(parse$1('{a:b,c:d}'), {
       type: 'ObjectExpression',
       properties:
         [{
@@ -4835,7 +4973,7 @@ var object = plan()
     });
   })
   .test('parse expression {[b]:foo}', t => {
-    t.deepEqual(parse('{[b]:foo}'), {
+    t.deepEqual(parse$1('{[b]:foo}'), {
       type: 'ObjectExpression',
       properties:
         [{
@@ -4850,7 +4988,7 @@ var object = plan()
     });
   })
   .test(`parse expression {['a']:foo}`, t => {
-    t.deepEqual(parse(`{['a']:foo}`), {
+    t.deepEqual(parse$1(`{['a']:foo}`), {
         "type": "ObjectExpression",
         "properties": [{
           "type": "Property",
@@ -4865,7 +5003,7 @@ var object = plan()
     );
   })
   .test(`parse expression {a:b, 'c':d, [e]:f}`, t => {
-    t.deepEqual(parse(`{a:b, 'c':d, [e]:f}`), {
+    t.deepEqual(parse$1(`{a:b, 'c':d, [e]:f}`), {
       type: 'ObjectExpression',
       properties:
         [{
@@ -4898,7 +5036,7 @@ var object = plan()
     });
   })
   .test(`parse expression {a:foo ? bim : bam, b:c}`, t => {
-    t.deepEqual(parse(`{a:foo ? bim : bam, b:c}`), {
+    t.deepEqual(parse$1(`{a:foo ? bim : bam, b:c}`), {
       "type": "ObjectExpression",
       "properties": [{
         "type": "Property",
@@ -4925,7 +5063,7 @@ var object = plan()
     });
   })
   .test('parse expression {get test(){}}', t => {
-    t.deepEqual(parse('{get test(){}}'), {
+    t.deepEqual(parse$1('{get test(){}}'), {
       type: 'ObjectExpression',
       properties:
         [{
@@ -4948,7 +5086,7 @@ var object = plan()
     });
   })
   .test('parse expression {get: function(){}}', t => {
-    t.deepEqual(parse('{get: function(){}}'), {
+    t.deepEqual(parse$1('{get: function(){}}'), {
         "type": "ObjectExpression",
         "properties": [{
           "type": "Property",
@@ -4970,7 +5108,7 @@ var object = plan()
     );
   })
   .test('parse expression {set test(val){}}', t => {
-    t.deepEqual(parse('{set test(val){}}'), {
+    t.deepEqual(parse$1('{set test(val){}}'), {
       type: 'ObjectExpression',
       properties:
         [{
@@ -4993,7 +5131,7 @@ var object = plan()
     });
   })
   .test('parse expression {get(){}}', t => {
-    t.deepEqual(parse('{get(){}}'), {
+    t.deepEqual(parse$1('{get(){}}'), {
       type: 'ObjectExpression',
       properties:
         [{
@@ -5016,7 +5154,7 @@ var object = plan()
     });
   })
   .test('parse expression {test(){}}', t => {
-    t.deepEqual(parse('{test(){}}'), {
+    t.deepEqual(parse$1('{test(){}}'), {
       type: 'ObjectExpression',
       properties:
         [{
@@ -5039,7 +5177,7 @@ var object = plan()
     });
   })
   .test('parse expression {test(foo){}}', t => {
-    t.deepEqual(parse('{test(foo){}}'), {
+    t.deepEqual(parse$1('{test(foo){}}'), {
       type: 'ObjectExpression',
       properties:
         [{
@@ -5062,7 +5200,7 @@ var object = plan()
     });
   })
   .test('parse expression {test(foo, bar){}}', t => {
-    t.deepEqual(parse('{test(foo, bar){}}'), {
+    t.deepEqual(parse$1('{test(foo, bar){}}'), {
       type: 'ObjectExpression',
       properties:
         [{
@@ -5087,7 +5225,7 @@ var object = plan()
     });
   })
   .test('parse expression {[foo](){}}', t => {
-    t.deepEqual(parse('{[foo](){}}'), {
+    t.deepEqual(parse$1('{[foo](){}}'), {
       type: 'ObjectExpression',
       properties:
         [{
@@ -5110,7 +5248,7 @@ var object = plan()
     });
   })
   .test('parse expression {5(){}}', t => {
-    t.deepEqual(parse('{5(){}}'), {
+    t.deepEqual(parse$1('{5(){}}'), {
       type: 'ObjectExpression',
       properties:
         [{
@@ -5133,7 +5271,7 @@ var object = plan()
     });
   })
   .test('parse expression {"test"(){}}', t => {
-    t.deepEqual(parse('{"test"(){}}'), {
+    t.deepEqual(parse$1('{"test"(){}}'), {
       type: 'ObjectExpression',
       properties:
         [{
@@ -5156,7 +5294,7 @@ var object = plan()
     });
   })
   .test('parse expression{b}', t => {
-    t.deepEqual(parse('{b}'), {
+    t.deepEqual(parse$1('{b}'), {
       type: 'ObjectExpression',
       properties:
         [{
@@ -5171,7 +5309,7 @@ var object = plan()
     });
   })
   .test('parse expression{b, c}', t => {
-    t.deepEqual(parse('{b, c}'), {
+    t.deepEqual(parse$1('{b, c}'), {
       type: 'ObjectExpression',
       properties:
         [{
@@ -5197,16 +5335,16 @@ var object = plan()
 
 var array = plan()
   .test('parse []', t => {
-    t.deepEqual(parse('[]'), {type: 'ArrayExpression', elements: []});
+    t.deepEqual(parse$1('[]'), {type: 'ArrayExpression', elements: []});
   })
   .test('parse [a]', t => {
-    t.deepEqual(parse('[a]'), {
+    t.deepEqual(parse$1('[a]'), {
       type: 'ArrayExpression',
       elements: [{type: 'Identifier', name: 'a'}]
     });
   })
   .test('parse [a,b]', t => {
-    t.deepEqual(parse('[a,b]'), {
+    t.deepEqual(parse$1('[a,b]'), {
       type: 'ArrayExpression',
       elements:
         [{type: 'Identifier', name: 'a'},
@@ -5214,19 +5352,19 @@ var array = plan()
     });
   })
   .test('parse [,a]', t => {
-    t.deepEqual(parse('[,a]'), {
+    t.deepEqual(parse$1('[,a]'), {
       type: 'ArrayExpression',
       elements: [null, {type: 'Identifier', name: 'a'}]
     });
   })
   .test('parse [a,]', t => {
-    t.deepEqual(parse('[a,]'), {
+    t.deepEqual(parse$1('[a,]'), {
       type: 'ArrayExpression',
       elements: [{type: 'Identifier', name: 'a'}]
     });
   })
   .test('parse [a,,b]', t => {
-    t.deepEqual(parse('[a,,b]'), {
+    t.deepEqual(parse$1('[a,,b]'), {
       type: 'ArrayExpression',
       elements:
         [{type: 'Identifier', name: 'a'},
@@ -5235,7 +5373,7 @@ var array = plan()
     });
   })
   .test('parse [,,,a,,,b,,,]', t => {
-    t.deepEqual(parse('[,,,a,,,b,,,]'), {
+    t.deepEqual(parse$1('[,,,a,,,b,,,]'), {
       type: 'ArrayExpression',
       elements:
         [null,
@@ -5250,7 +5388,7 @@ var array = plan()
     });
   })
   .test('parse [a,,,b,]', t => {
-    t.deepEqual(parse('[a,,,b,]'), {
+    t.deepEqual(parse$1('[a,,,b,]'), {
       type: 'ArrayExpression',
       elements:
         [{type: 'Identifier', name: 'a'},
@@ -5260,7 +5398,7 @@ var array = plan()
     });
   })
   .test('parse [[a,b],[c,,d],]', t => {
-    t.deepEqual(parse('[[a,b],[c,,d],]'), {
+    t.deepEqual(parse$1('[[a,b],[c,,d],]'), {
       type: 'ArrayExpression',
       elements:
         [{
@@ -5279,7 +5417,7 @@ var array = plan()
     });
   })
   .test('parse [,...b]', t => {
-    t.deepEqual(parse('[,...b]'), {
+    t.deepEqual(parse$1('[,...b]'), {
       type: 'ArrayExpression',
       elements:
         [null,
@@ -5290,7 +5428,7 @@ var array = plan()
     });
   })
   .test('parse [...b]', t => {
-    t.deepEqual(parse('[...b]'), {
+    t.deepEqual(parse$1('[...b]'), {
       type: 'ArrayExpression',
       elements:
         [{
@@ -5300,7 +5438,7 @@ var array = plan()
     });
   })
   .test('parse [b,...c]', t => {
-    t.deepEqual(parse('[b,...c]'), {
+    t.deepEqual(parse$1('[b,...c]'), {
       type: 'ArrayExpression',
       elements:
         [{type: 'Identifier', name: 'b'},
@@ -5311,7 +5449,7 @@ var array = plan()
     });
   })
   .test('parse [...b,...c]', t => {
-    t.deepEqual(parse('[...b,...c]'), {
+    t.deepEqual(parse$1('[...b,...c]'), {
       type: 'ArrayExpression',
       elements:
         [{
@@ -5323,11 +5461,35 @@ var array = plan()
             argument: {type: 'Identifier', name: 'c'}
           }]
     });
+  })
+  .test('parse [a = b, 4+3, function(){}]', t => {
+    t.deepEqual(parse$1('[a = b, 4+3, function(){}]'), {
+        "type": "ArrayExpression",
+        "elements": [{
+          "type": "AssignmentExpression",
+          "left": {"type": "Identifier", "name": "a"},
+          "right": {"type": "Identifier", "name": "b"},
+          "operator": "="
+        }, {
+          "type": "BinaryExpression",
+          "left": {"type": "Literal", "value": 4},
+          "right": {"type": "Literal", "value": 3},
+          "operator": "+"
+        }, {
+          "type": "FunctionExpression",
+          "id": null,
+          "async": false,
+          "generator": false,
+          "params": [],
+          "body": {"type": "BlockStatement", "body": []}
+        }]
+      }
+    );
   });
 
 var functions = plan()
   .test('parse expression function (){foo++}', t => {
-    t.deepEqual(parse('function (){foo++}'), {
+    t.deepEqual(parse$1('function (){foo++}'), {
       type: 'FunctionExpression',
       params: [],
       body:
@@ -5351,7 +5513,7 @@ var functions = plan()
     });
   })
   .test('parse expression function *(){foo++}', t => {
-    t.deepEqual(parse('function *(){foo++}'), {
+    t.deepEqual(parse$1('function *(){foo++}'), {
       type: 'FunctionExpression',
       params: [],
       body:
@@ -5375,7 +5537,7 @@ var functions = plan()
     });
   })
   .test('parse expression function a(){}', t => {
-    t.deepEqual(parse('function a(){}'), {
+    t.deepEqual(parse$1('function a(){}'), {
       type: 'FunctionExpression',
       params: [],
       body: {type: 'BlockStatement', body: []},
@@ -5385,7 +5547,7 @@ var functions = plan()
     });
   })
   .test('parse expression function *a(){}', t => {
-    t.deepEqual(parse('function *a(){}'), {
+    t.deepEqual(parse$1('function *a(){}'), {
       type: 'FunctionExpression',
       params: [],
       body: {type: 'BlockStatement', body: []},
@@ -5395,7 +5557,7 @@ var functions = plan()
     });
   })
   .test('parse expression function (b){}', t => {
-    t.deepEqual(parse('function (b){}'), {
+    t.deepEqual(parse$1('function (b){}'), {
       type: 'FunctionExpression',
       params: [{type: 'Identifier', name: 'b'}],
       body: {type: 'BlockStatement', body: []},
@@ -5405,7 +5567,7 @@ var functions = plan()
     });
   })
   .test('parse expression function a(b){foo++}', t => {
-    t.deepEqual(parse('function a(b){foo++}'), {
+    t.deepEqual(parse$1('function a(b){foo++}'), {
       type: 'FunctionExpression',
       params: [{type: 'Identifier', name: 'b'}],
       body:
@@ -5429,7 +5591,7 @@ var functions = plan()
     });
   })
   .test('parse expression function (b,c){}', t => {
-    t.deepEqual(parse('function (b,c){}'), {
+    t.deepEqual(parse$1('function (b,c){}'), {
       type: 'FunctionExpression',
       params:
         [{type: 'Identifier', name: 'b'},
@@ -5441,7 +5603,7 @@ var functions = plan()
     });
   })
   .test('parse expression function a(b,c){foo++}', t => {
-    t.deepEqual(parse('function a(b,c){foo++}'), {
+    t.deepEqual(parse$1('function a(b,c){foo++}'), {
       type: 'FunctionExpression',
       params:
         [{type: 'Identifier', name: 'b'},
@@ -5467,7 +5629,7 @@ var functions = plan()
     });
   })
   .test('parse expression function (b,c,d){}', t => {
-    t.deepEqual(parse('function (b,c,d){}'), {
+    t.deepEqual(parse$1('function (b,c,d){}'), {
       type: 'FunctionExpression',
       params:
         [{type: 'Identifier', name: 'b'},
@@ -5480,7 +5642,7 @@ var functions = plan()
     });
   })
   .test('parse expression function a(b,c,d){foo++}', t => {
-    t.deepEqual(parse('function a(b,c,d){foo++}'), {
+    t.deepEqual(parse$1('function a(b,c,d){foo++}'), {
       type: 'FunctionExpression',
       params:
         [{type: 'Identifier', name: 'b'},
@@ -5507,7 +5669,7 @@ var functions = plan()
     });
   })
   .test('parse expression function (...b){}', t => {
-    t.deepEqual(parse('function (...b){}'), {
+    t.deepEqual(parse$1('function (...b){}'), {
       type: 'FunctionExpression',
       params: [{
         type: 'RestElement',
@@ -5520,7 +5682,7 @@ var functions = plan()
     });
   })
   .test('parse expression function (aa,...b){}', t => {
-    t.deepEqual(parse('function (aa,...b){}'), {
+    t.deepEqual(parse$1('function (aa,...b){}'), {
       type: 'FunctionExpression',
       params:
         [{type: 'Identifier', name: 'aa'},
@@ -5535,7 +5697,7 @@ var functions = plan()
     });
   })
   .test('parse expression function (aa,b = c){}', t => {
-    t.deepEqual(parse('function (aa,b = c){}'), {
+    t.deepEqual(parse$1('function (aa,b = c){}'), {
       type: 'FunctionExpression',
       params:
         [{type: 'Identifier', name: 'aa'},
@@ -5551,7 +5713,7 @@ var functions = plan()
     });
   })
   .test('parse expression function (b = c){}', t => {
-    t.deepEqual(parse('function (b = c){}'), {
+    t.deepEqual(parse$1('function (b = c){}'), {
       type: 'FunctionExpression',
       params: [{
         type: 'AssignmentPattern',
@@ -5565,7 +5727,7 @@ var functions = plan()
     });
   })
   .test('parse expression function ([a,{b:{c:d}}] = {}){}', t => {
-    t.deepEqual(parse('function ([a,{b:{c:d}}] = {}){}'), {
+    t.deepEqual(parse$1('function ([a,{b:{c:d}}] = {}){}'), {
       type: 'FunctionExpression',
       params: [{
         type: 'AssignmentPattern',
@@ -5608,11 +5770,153 @@ var functions = plan()
       generator: false,
       id: null
     });
+  })
+  .test('parse () => {}', t => {
+    t.deepEqual(parse$1('() => {}'), {
+      type: 'ArrowFunctionExpression',
+      body: {type: 'BlockStatement', body: []},
+      params: [],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })
+  .test('parse a => {}', t => {
+    t.deepEqual(parse$1('a => {}'), {
+      type: 'ArrowFunctionExpression',
+      body: {type: 'BlockStatement', body: []},
+      params: [{type: 'Identifier', name: 'a'}],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })
+  .test('parse (a) => {}', t => {
+    t.deepEqual(parse$1('(a) => {}'), {
+      type: 'ArrowFunctionExpression',
+      body: {type: 'BlockStatement', body: []},
+      params: [{type: 'Identifier', name: 'a'}],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })
+  .test('parse ()=>({})', t => {
+    t.deepEqual(parse$1('()=>({})'), {
+      type: 'ArrowFunctionExpression',
+      body: {type: 'ObjectExpression', properties: []},
+      params: [],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })
+  .test('parse a =>({})', t => {
+    t.deepEqual(parse$1('a =>({})'), {
+      type: 'ArrowFunctionExpression',
+      body: {type: 'ObjectExpression', properties: []},
+      params: [{type: 'Identifier', name: 'a'}],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })
+  .test('parse a => a', t => {
+    t.deepEqual(parse$1('a => a'), {
+      type: 'ArrowFunctionExpression',
+      body: {type: 'Identifier', name: 'a'},
+      params: [{type: 'Identifier', name: 'a'}],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })
+  .test('parse a => a+b', t => {
+    t.deepEqual(parse$1('a => a+b'), {
+      type: 'ArrowFunctionExpression',
+      body:
+        {
+          type: 'BinaryExpression',
+          left: {type: 'Identifier', name: 'a'},
+          right: {type: 'Identifier', name: 'b'},
+          operator: '+'
+        },
+      params: [{type: 'Identifier', name: 'a'}],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })
+  .test('parse (a,b,c,d) => a', t => {
+    t.deepEqual(parse$1('(a,b) => a'), {
+      type: 'ArrowFunctionExpression',
+      body: {type: 'Identifier', name: 'a'},
+      params:
+        [{type: 'Identifier', name: 'a'},
+          {type: 'Identifier', name: 'b'}],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })
+  .test('parse ({a})=>a', t => {
+    t.deepEqual(parse$1('({a})=>a'), {
+      type: 'ArrowFunctionExpression',
+      body: {type: 'Identifier', name: 'a'},
+      params:
+        [{
+          type: 'ObjectPattern',
+          properties:
+            [{
+              type: 'Property',
+              key: {type: 'Identifier', name: 'a'},
+              value: {type: 'Identifier', name: 'a'},
+              kind: 'init',
+              computed: false,
+              method: false,
+              shorthand: true
+            }]
+        }],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
+  })
+  .test('parse (a, ...b) => a+b', t => {
+    t.deepEqual(parse$1('(a, ...b) => a+b'), {
+      type: 'ArrowFunctionExpression',
+      body:
+        {
+          type: 'BinaryExpression',
+          left: {type: 'Identifier', name: 'a'},
+          right: {type: 'Identifier', name: 'b'},
+          operator: '+'
+        },
+      params:
+        [{type: 'Identifier', name: 'a'},
+          {
+            type: 'RestElement',
+            argument: {type: 'Identifier', name: 'b'}
+          }],
+      id: null,
+      async: false,
+      generator: false,
+      expression: true
+    });
   });
 
 var klass = plan()
   .test('parse class test{}', t => {
-    t.deepEqual(parse('class test{}'), {
+    t.deepEqual(parse$1('class test{}'), {
       type: 'ClassExpression',
       id: {type: 'Identifier', name: 'test'},
       superClass: null,
@@ -5620,7 +5924,7 @@ var klass = plan()
     });
   })
   .test('parse class {}', t => {
-    t.deepEqual(parse('class {}'), {
+    t.deepEqual(parse$1('class {}'), {
       type: 'ClassExpression',
       id: null,
       superClass: null,
@@ -5628,7 +5932,7 @@ var klass = plan()
     });
   })
   .test('parse class {;}', t => {
-    t.deepEqual(parse('class {;}'), {
+    t.deepEqual(parse$1('class {;}'), {
       type: 'ClassExpression',
       id: null,
       superClass: null,
@@ -5636,7 +5940,7 @@ var klass = plan()
     });
   })
   .test('parse class test{;;}', t => {
-    t.deepEqual(parse('class test{;;}'), {
+    t.deepEqual(parse$1('class test{;;}'), {
       type: 'ClassExpression',
       id: {type: 'Identifier', name: 'test'},
       superClass: null,
@@ -5644,7 +5948,7 @@ var klass = plan()
     });
   })
   .test('parse class {constructor(){}foo(){}}', t => {
-    t.deepEqual(parse('class {constructor(){}foo(){}}'), {
+    t.deepEqual(parse$1('class {constructor(){}foo(){}}'), {
       type: 'ClassExpression',
       id: null,
       superClass: null,
@@ -5688,7 +5992,7 @@ var klass = plan()
     });
   })
   .test('parse class {get blah(){}set blah(foo){}}', t => {
-    t.deepEqual(parse('class {get blah(){}set blah(foo){}}'), {
+    t.deepEqual(parse$1('class {get blah(){}set blah(foo){}}'), {
       type: 'ClassExpression',
       id: null,
       superClass: null,
@@ -5732,7 +6036,7 @@ var klass = plan()
     });
   })
   .test('parse class test{get(){}set(foo){}}', t => {
-    t.deepEqual(parse('class test{get(){}set(foo){}}'), {
+    t.deepEqual(parse$1('class test{get(){}set(foo){}}'), {
       type: 'ClassExpression',
       id: {type: 'Identifier', name: 'test'},
       superClass: null,
@@ -5776,7 +6080,7 @@ var klass = plan()
     });
   })
   .test('parse class {foo(){}}', t => {
-    t.deepEqual(parse('class {foo(){}}'), {
+    t.deepEqual(parse$1('class {foo(){}}'), {
       type: 'ClassExpression',
       id: null,
       superClass: null,
@@ -5804,7 +6108,7 @@ var klass = plan()
     });
   })
   .test('parse class {[foo](){}}', t => {
-    t.deepEqual(parse('class {[foo](){}}'), {
+    t.deepEqual(parse$1('class {[foo](){}}'), {
       type: 'ClassExpression',
       id: null,
       superClass: null,
@@ -5832,7 +6136,7 @@ var klass = plan()
     });
   })
   .test('parse class test{"foo"(){}}', t => {
-    t.deepEqual(parse('class test{"foo"(){}}'), {
+    t.deepEqual(parse$1('class test{"foo"(){}}'), {
       type: 'ClassExpression',
       id: {type: 'Identifier', name: 'test'},
       superClass: null,
@@ -5860,7 +6164,7 @@ var klass = plan()
     });
   })
   .test('parse class {5(){}}', t => {
-    t.deepEqual(parse('class {5(){}}'), {
+    t.deepEqual(parse$1('class {5(){}}'), {
       type: 'ClassExpression',
       id: null,
       superClass: null,
@@ -5888,7 +6192,7 @@ var klass = plan()
     });
   })
   .test('parse class extends b {}', t => {
-    t.deepEqual(parse('class extends b {}'), {
+    t.deepEqual(parse$1('class extends b {}'), {
       type: 'ClassExpression',
       id: null,
       superClass: {type: 'Identifier', name: 'b'},
@@ -5896,7 +6200,7 @@ var klass = plan()
     });
   })
   .test('parse class a extends b.c {}', t => {
-    t.deepEqual(parse('class a extends b.c {}'), {
+    t.deepEqual(parse$1('class a extends b.c {}'), {
       type: 'ClassExpression',
       id: {type: 'Identifier', name: 'a'},
       superClass:
@@ -5910,7 +6214,7 @@ var klass = plan()
     });
   })
   .test('parse class {static hello(){}static get foo(){}}', t => {
-    t.deepEqual(parse('class {static hello(){}static get foo(){}}'), {
+    t.deepEqual(parse$1('class {static hello(){}static get foo(){}}'), {
       type: 'ClassExpression',
       id: null,
       superClass: null,
@@ -5954,11 +6258,11 @@ var klass = plan()
     });
   });
 
-const parse$1 = code => parseScript(code);
+const parse$2 = code => parseScript(code);
 
 var yieldExpression$1 = plan()
   .test('parse function *test(){yield foo;}', t => {
-    t.deepEqual(parse$1('function *test(){yield foo;}').body, [{
+    t.deepEqual(parse$2('function *test(){yield foo;}').body, [{
       type: 'FunctionDeclaration',
       params: [],
       body:
@@ -5981,7 +6285,7 @@ var yieldExpression$1 = plan()
     }]);
   })
   .test('parse function *test(){yield *foo.bar;}', t => {
-    t.deepEqual(parse$1('function *test(){yield *foo.bar;}').body, [{
+    t.deepEqual(parse$2('function *test(){yield *foo.bar;}').body, [{
       type: 'FunctionDeclaration',
       params: [],
       body:
@@ -6010,7 +6314,7 @@ var yieldExpression$1 = plan()
     }]);
   })
   .test('parse function *test(){yield 4+3;}', t => {
-    t.deepEqual(parse$1('function *test(){yield 4+3;}').body, [{
+    t.deepEqual(parse$2('function *test(){yield 4+3;}').body, [{
       type: 'FunctionDeclaration',
       params: [],
       body:
@@ -6039,7 +6343,7 @@ var yieldExpression$1 = plan()
     }]);
   })
   .test('parse function *test(){yield 4,5;}', t => {
-    t.deepEqual(parse$1('function *test(){yield 4,5;}').body, [{
+    t.deepEqual(parse$2('function *test(){yield 4,5;}').body, [{
       type: 'FunctionDeclaration',
       params: [],
       body:
@@ -6089,15 +6393,15 @@ var expressions = plan()
 
 var empty = plan()
   .test('parse ;', t => {
-    t.deepEqual(parse$1(';').body,[ { type: 'EmptyStatement' } ]);
+    t.deepEqual(parse$2(';').body,[ { type: 'EmptyStatement' } ]);
   })
   .test('parse ;;', t => {
-    t.deepEqual(parse$1(';;').body,[ { type: 'EmptyStatement' }, { type: 'EmptyStatement' } ]);
+    t.deepEqual(parse$2(';;').body,[ { type: 'EmptyStatement' }, { type: 'EmptyStatement' } ]);
   });
 
 var ifStatements = plan()
   .test('parse if(a)b;', t => {
-    t.deepEqual(parse$1('if(a)b;').body, [{
+    t.deepEqual(parse$2('if(a)b;').body, [{
       type: 'IfStatement',
       test: {type: 'Identifier', name: 'a'},
       alternate: null,
@@ -6109,7 +6413,7 @@ var ifStatements = plan()
     }]);
   })
   .test('parse if(a === 34)b', t => {
-    t.deepEqual(parse$1('if(a === 34)b').body, [{
+    t.deepEqual(parse$2('if(a === 34)b').body, [{
       type: 'IfStatement',
       test:
         {
@@ -6127,7 +6431,7 @@ var ifStatements = plan()
     }]);
   })
   .test('parse if(a)b;else c;', t => {
-    t.deepEqual(parse$1('if(a)b;else c;').body, [{
+    t.deepEqual(parse$2('if(a)b;else c;').body, [{
       type: 'IfStatement',
       test: {type: 'Identifier', name: 'a'},
       alternate:
@@ -6143,7 +6447,7 @@ var ifStatements = plan()
     }]);
   })
   .test('parse if(a === 34.34)b;else c', t => {
-    t.deepEqual(parse$1('if(a === 34.34)b;else c').body, [{
+    t.deepEqual(parse$2('if(a === 34.34)b;else c').body, [{
       type: 'IfStatement',
       test:
         {
@@ -6165,7 +6469,7 @@ var ifStatements = plan()
     }]);
   })
   .test('parse if(a)b;else if(c)d;', t => {
-    t.deepEqual(parse$1('if(a)b;else if(c)d;').body, [{
+    t.deepEqual(parse$2('if(a)b;else if(c)d;').body, [{
       type: 'IfStatement',
       test: {type: 'Identifier', name: 'a'},
       alternate:
@@ -6187,7 +6491,7 @@ var ifStatements = plan()
     }]);
   })
   .test('parse if(a <= "blah")b;else if(c >= f)d;', t => {
-    t.deepEqual(parse$1('if(a <= "blah")b;else if(c >= f)d;').body, [{
+    t.deepEqual(parse$2('if(a <= "blah")b;else if(c >= f)d;').body, [{
       type: 'IfStatement',
       test:
         {
@@ -6221,7 +6525,7 @@ var ifStatements = plan()
     }]);
   })
   .test('parse if(a){b}', t => {
-    t.deepEqual(parse$1('if(a){b}').body, [{
+    t.deepEqual(parse$2('if(a){b}').body, [{
       type: 'IfStatement',
       test: {type: 'Identifier', name: 'a'},
       alternate: null,
@@ -6237,7 +6541,7 @@ var ifStatements = plan()
     }]);
   })
   .test('parse if(a)b;else{c}', t => {
-    t.deepEqual(parse$1('if(a)b;else{c}').body, [{
+    t.deepEqual(parse$2('if(a)b;else{c}').body, [{
       type: 'IfStatement',
       test: {type: 'Identifier', name: 'a'},
       alternate:
@@ -6257,7 +6561,7 @@ var ifStatements = plan()
     }]);
   })
   .test('parse if(a){b}else{c}', t => {
-    t.deepEqual(parse$1('if(a){b}else{c}').body, [{
+    t.deepEqual(parse$2('if(a){b}else{c}').body, [{
       type: 'IfStatement',
       test: {type: 'Identifier', name: 'a'},
       alternate:
@@ -6281,7 +6585,7 @@ var ifStatements = plan()
     }]);
   })
   .test('parse if(a){b}else if(d){c}else{foo;}', t => {
-    t.deepEqual(parse$1('if(a){b}else if(d){c}else{foo;}').body, [{
+    t.deepEqual(parse$2('if(a){b}else if(d){c}else{foo;}').body, [{
       type: 'IfStatement',
       test: {type: 'Identifier', name: 'a'},
       alternate:
@@ -6321,7 +6625,7 @@ var ifStatements = plan()
 
 var whileStatements = plan()
   .test('parse while(foo <= 3.3)blah++;', t => {
-    t.deepEqual(parse$1('while(foo <= 3.3)blah++;').body, [{
+    t.deepEqual(parse$2('while(foo <= 3.3)blah++;').body, [{
       type: 'WhileStatement',
       test:
         {
@@ -6344,7 +6648,7 @@ var whileStatements = plan()
     }]);
   })
   .test('parse while(foo <= 3.3)blah++', t => {
-    t.deepEqual(parse$1('while(foo <= 3.3)blah++').body, [{
+    t.deepEqual(parse$2('while(foo <= 3.3)blah++').body, [{
       type: 'WhileStatement',
       test:
         {
@@ -6367,7 +6671,7 @@ var whileStatements = plan()
     }]);
   })
   .test(`parse while(true){foo+=1;}`, t => {
-    t.deepEqual(parse$1(`while(true){foo+=1;}`).body, [{
+    t.deepEqual(parse$2(`while(true){foo+=1;}`).body, [{
       type: 'WhileStatement',
       test: {type: 'Literal', value: true},
       body:
@@ -6388,7 +6692,7 @@ var whileStatements = plan()
     }]);
   })
   .test(`parse while(true);`, t => {
-    t.deepEqual(parse$1(`while(true);`).body, [{
+    t.deepEqual(parse$2(`while(true);`).body, [{
       type: 'WhileStatement',
       test: {type: 'Literal', value: true},
       body: {type: 'EmptyStatement'}
@@ -6399,7 +6703,7 @@ var doWhile = plan()
   .test('parse do ; while(true);', t => {
     try {
 
-      t.deepEqual(parse$1('do ; while(true);').body, [{
+      t.deepEqual(parse$2('do ; while(true);').body, [{
         type: 'DoWhileStatement',
         body: {type: 'EmptyStatement'},
         test: {type: 'Literal', value: true}
@@ -6410,7 +6714,7 @@ var doWhile = plan()
     }
   })
   .test('parse do foo++; while(blah < 3);', t => {
-    t.deepEqual(parse$1('do foo++; while(blah < 3);').body, [{
+    t.deepEqual(parse$2('do foo++; while(blah < 3);').body, [{
       type: 'DoWhileStatement',
       body:
         {
@@ -6433,14 +6737,14 @@ var doWhile = plan()
     }]);
   })
   .test('parse do {} while(false);', t => {
-    t.deepEqual(parse$1('do {} while(false);').body, [{
+    t.deepEqual(parse$2('do {} while(false);').body, [{
       type: 'DoWhileStatement',
       body: {type: 'BlockStatement', body: []},
       test: {type: 'Literal', value: false}
     }]);
   })
   .test('parse do {foo++} while(blah < 3);', t => {
-    t.deepEqual(parse$1('do {foo++} while(blah < 3);').body, [{
+    t.deepEqual(parse$2('do {foo++} while(blah < 3);').body, [{
       type: 'DoWhileStatement',
       body:
         {
@@ -6469,7 +6773,7 @@ var doWhile = plan()
 
 var forStatements = plan()
   .test('parse for(var i = 0;i<foo.length;i++){bar++;}', t => {
-    t.deepEqual(parse$1('for(var i = 0;i<foo.length;i++){bar++;}').body, [{
+    t.deepEqual(parse$2('for(var i = 0;i<foo.length;i++){bar++;}').body, [{
       type: 'ForStatement',
       body:
         {
@@ -6520,7 +6824,7 @@ var forStatements = plan()
     }]);
   })
   .test('parse for(var i = 0, j=4;i<foo.length;i++){bar++;}', t => {
-    t.deepEqual(parse$1('for(var i = 0, j=4;i<foo.length;i++){bar++;}').body, [{
+    t.deepEqual(parse$2('for(var i = 0, j=4;i<foo.length;i++){bar++;}').body, [{
       type: 'ForStatement',
       body:
         {
@@ -6576,7 +6880,7 @@ var forStatements = plan()
     }]);
   })
   .test('parse for(i=-1;i<foo.length;i++){bar++;}', t => {
-    t.deepEqual(parse$1('for(i=-1;i<foo.length;i++){bar++;}').body, [{
+    t.deepEqual(parse$2('for(i=-1;i<foo.length;i++){bar++;}').body, [{
       type: 'ForStatement',
       body:
         {
@@ -6629,7 +6933,7 @@ var forStatements = plan()
     }]);
   })
   .test('parse for(;i<foo.length;i++){bar++;}', t => {
-    t.deepEqual(parse$1('for(;i<foo.length;i++){bar++;}').body, [{
+    t.deepEqual(parse$2('for(;i<foo.length;i++){bar++;}').body, [{
       type: 'ForStatement',
       body:
         {
@@ -6670,7 +6974,7 @@ var forStatements = plan()
     }]);
   })
   .test('parse for(var i = 0;i<foo.length;i++)bar++;', t => {
-    t.deepEqual(parse$1('for(var i = 0;i<foo.length;i++)bar++;').body, [{
+    t.deepEqual(parse$2('for(var i = 0;i<foo.length;i++)bar++;').body, [{
       type: 'ForStatement',
       body:
         {
@@ -6717,7 +7021,7 @@ var forStatements = plan()
     }]);
   })
   .test('parse for(;i<foo.length;i++)bar++;', t => {
-    t.deepEqual(parse$1('for(;i<foo.length;i++)bar++;').body, [{
+    t.deepEqual(parse$2('for(;i<foo.length;i++)bar++;').body, [{
       type: 'ForStatement',
       body:
         {
@@ -6754,7 +7058,7 @@ var forStatements = plan()
     }]);
   })
   .test('parse for(;;){bar++;}', t => {
-    t.deepEqual(parse$1('for(;;){bar++;}').body, [{
+    t.deepEqual(parse$2('for(;;){bar++;}').body, [{
       type: 'ForStatement',
       body:
         {
@@ -6777,7 +7081,7 @@ var forStatements = plan()
     }]);
   })
   .test('parse for(;;)bar++;', t => {
-    t.deepEqual(parse$1('for(;;)bar++;').body, [{
+    t.deepEqual(parse$2('for(;;)bar++;').body, [{
       type: 'ForStatement',
       body:
         {
@@ -6796,7 +7100,7 @@ var forStatements = plan()
     }]);
   })
   .test('parse for(;;);', t => {
-    t.deepEqual(parse$1('for(;;);').body, [
+    t.deepEqual(parse$2('for(;;);').body, [
       {
         type: 'ForStatement',
         body: {type: 'EmptyStatement'},
@@ -6806,7 +7110,7 @@ var forStatements = plan()
       }]);
   })
   .test('parse for(;;){}', t => {
-    t.deepEqual(parse$1('for(;;){}').body, [{
+    t.deepEqual(parse$2('for(;;){}').body, [{
       type: 'ForStatement',
       body: {type: 'BlockStatement', body: []},
       init: null,
@@ -6815,7 +7119,7 @@ var forStatements = plan()
     }]);
   })
   .test('parse for ( i = 0, l = 6;;) {}', t => {
-    t.deepEqual(parse$1('for ( i = 0, l = 6;;) {}').body, [{
+    t.deepEqual(parse$2('for ( i = 0, l = 6;;) {}').body, [{
       type: 'ForStatement',
       body: {type: 'BlockStatement', body: []},
       init:
@@ -6842,7 +7146,7 @@ var forStatements = plan()
 
 var forIn = plan()
   .test('parse for(var p in blah){foo++;}', t => {
-    t.deepEqual(parse$1('for(var p in blah){foo++;}').body, [{
+    t.deepEqual(parse$2('for(var p in blah){foo++;}').body, [{
       type: 'ForInStatement',
       body:
         {
@@ -6874,7 +7178,7 @@ var forIn = plan()
     }]);
   })
   .test('parse for(var p in blah.woot)foo++;', t => {
-    t.deepEqual(parse$1('for(var p in blah.woot)foo++;').body, [{
+    t.deepEqual(parse$2('for(var p in blah.woot)foo++;').body, [{
       type: 'ForInStatement',
       body:
         {
@@ -6908,7 +7212,7 @@ var forIn = plan()
     }]);
   })
   .test('parse for(name in foo){}', t => {
-    t.deepEqual(parse$1('for(name in foo){}').body, [{
+    t.deepEqual(parse$2('for(name in foo){}').body, [{
       type: 'ForInStatement',
       body: {type: 'BlockStatement', body: []},
       left: {type: 'Identifier', name: 'name'},
@@ -6918,7 +7222,7 @@ var forIn = plan()
 
 var varStatement = plan()
   .test('parse var foo, bar, woot;', t => {
-    t.deepEqual(parse$1('var foo, bar, woot;').body, [{
+    t.deepEqual(parse$2('var foo, bar, woot;').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -6940,7 +7244,7 @@ var varStatement = plan()
     }]);
   })
   .test('parse var foo;', t => {
-    t.deepEqual(parse$1('var foo;').body, [{
+    t.deepEqual(parse$2('var foo;').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -6952,7 +7256,7 @@ var varStatement = plan()
     }]);
   })
   .test('parse var foo = 54, bar;', t => {
-    t.deepEqual(parse$1('var foo = 54, bar;').body, [{
+    t.deepEqual(parse$2('var foo = 54, bar;').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -6969,7 +7273,7 @@ var varStatement = plan()
     }]);
   })
   .test('parse var foo, bar=true;', t => {
-    t.deepEqual(parse$1('var foo, bar=true;').body, [{
+    t.deepEqual(parse$2('var foo, bar=true;').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -6984,11 +7288,43 @@ var varStatement = plan()
           }],
       kind: 'var'
     }]);
+  })
+  .test('parse var foo = 54;', t => {
+    t.deepEqual(parse$2('var foo = (a,b,c) => a+b+c;').body, [{
+      "type": "VariableDeclaration",
+      "kind": "var",
+      "declarations": [{
+        "type": "VariableDeclarator",
+        "id": {"type": "Identifier", "name": "foo"},
+        "init": {
+          "type": "ArrowFunctionExpression",
+          "expression": true,
+          "async": false,
+          "generator": false,
+          "id": null,
+          "params": [{"type": "Identifier", "name": "a"}, {"type": "Identifier", "name": "b"}, {
+            "type": "Identifier",
+            "name": "c"
+          }],
+          "body": {
+            "type": "BinaryExpression",
+            "left": {
+              "type": "BinaryExpression",
+              "left": {"type": "Identifier", "name": "a"},
+              "right": {"type": "Identifier", "name": "b"},
+              "operator": "+"
+            },
+            "right": {"type": "Identifier", "name": "c"},
+            "operator": "+"
+          }
+        }
+      }]
+    }]);
   });
 
 var block = plan()
   .test('parse {var foo = 34.5}', t => {
-    t.deepEqual(parse$1('{var foo = 34.5}').body, [{
+    t.deepEqual(parse$2('{var foo = 34.5}').body, [{
       type: 'BlockStatement',
       body:
         [{
@@ -7004,7 +7340,7 @@ var block = plan()
     }]);
   })
   .test('parse {var foo = 34.5;}', t => {
-    t.deepEqual(parse$1('{var foo = 34.5;}').body, [{
+    t.deepEqual(parse$2('{var foo = 34.5;}').body, [{
       type: 'BlockStatement',
       body:
         [{
@@ -7020,7 +7356,7 @@ var block = plan()
     }]);
   })
   .test('parse {foo=34.43}', t => {
-    t.deepEqual(parse$1('{foo=34.43}').body, [{
+    t.deepEqual(parse$2('{foo=34.43}').body, [{
       type: 'BlockStatement',
       body:
         [{
@@ -7036,7 +7372,7 @@ var block = plan()
     }]);
   })
   .test('parse {foo=34.43;}', t => {
-    t.deepEqual(parse$1('{foo=34.43;}').body, [{
+    t.deepEqual(parse$2('{foo=34.43;}').body, [{
       type: 'BlockStatement',
       body:
         [{
@@ -7052,7 +7388,7 @@ var block = plan()
     }]);
   })
   .test('parse {f()}', t => {
-    t.deepEqual(parse$1('{f()}').body, [{
+    t.deepEqual(parse$2('{f()}').body, [{
       type: 'BlockStatement',
       body:
         [{
@@ -7067,7 +7403,7 @@ var block = plan()
     }]);
   })
   .test('parse {f();}', t => {
-    t.deepEqual(parse$1('{f();}').body, [{
+    t.deepEqual(parse$2('{f();}').body, [{
       type: 'BlockStatement',
       body:
         [{
@@ -7117,7 +7453,7 @@ var block = plan()
 
 var functions$1 = plan()
   .test('parse function a(){foo++}', t => {
-    t.deepEqual(parse$1('function a(){foo++}').body, [{
+    t.deepEqual(parse$2('function a(){foo++}').body, [{
       type: 'FunctionDeclaration',
       params: [],
       body:
@@ -7141,7 +7477,7 @@ var functions$1 = plan()
     }]);
   })
   .test('parse function *a(){foo++}', t => {
-    t.deepEqual(parse$1('function *a(){foo++}').body, [{
+    t.deepEqual(parse$2('function *a(){foo++}').body, [{
       type: 'FunctionDeclaration',
       params: [],
       body:
@@ -7165,7 +7501,7 @@ var functions$1 = plan()
     }]);
   })
   .test('parse function a(){}', t => {
-    t.deepEqual(parse$1('function a(){}').body, [{
+    t.deepEqual(parse$2('function a(){}').body, [{
       type: 'FunctionDeclaration',
       params: [],
       body: {type: 'BlockStatement', body: []},
@@ -7175,7 +7511,7 @@ var functions$1 = plan()
     }]);
   })
   .test('parse function a(b){}', t => {
-    t.deepEqual(parse$1('function a(b){}').body, [{
+    t.deepEqual(parse$2('function a(b){}').body, [{
       type: 'FunctionDeclaration',
       params: [{type: 'Identifier', name: 'b'}],
       body: {type: 'BlockStatement', body: []},
@@ -7185,7 +7521,7 @@ var functions$1 = plan()
     }]);
   })
   .test('parse function a(b){foo++}', t => {
-    t.deepEqual(parse$1('function a(b){foo++}').body, [{
+    t.deepEqual(parse$2('function a(b){foo++}').body, [{
       type: 'FunctionDeclaration',
       params: [{type: 'Identifier', name: 'b'}],
       body:
@@ -7209,7 +7545,7 @@ var functions$1 = plan()
     }]);
   })
   .test('parse function a(b,c){}', t => {
-    t.deepEqual(parse$1('function a(b,c){}').body, [{
+    t.deepEqual(parse$2('function a(b,c){}').body, [{
       type: 'FunctionDeclaration',
       params:
         [{type: 'Identifier', name: 'b'},
@@ -7221,7 +7557,7 @@ var functions$1 = plan()
     }]);
   })
   .test('parse function a(b,c){foo++}', t => {
-    t.deepEqual(parse$1('function a(b,c){foo++}').body, [{
+    t.deepEqual(parse$2('function a(b,c){foo++}').body, [{
       type: 'FunctionDeclaration',
       params:
         [{type: 'Identifier', name: 'b'},
@@ -7247,7 +7583,7 @@ var functions$1 = plan()
     }]);
   })
   .test('parse function a(b,c,d){}', t => {
-    t.deepEqual(parse$1('function a(b,c,d){}').body, [{
+    t.deepEqual(parse$2('function a(b,c,d){}').body, [{
       type: 'FunctionDeclaration',
       params:
         [{type: 'Identifier', name: 'b'},
@@ -7260,7 +7596,7 @@ var functions$1 = plan()
     }]);
   })
   .test('parse function a(b,c,d){foo++}', t => {
-    t.deepEqual(parse$1('function a(b,c,d){foo++}').body, [{
+    t.deepEqual(parse$2('function a(b,c,d){foo++}').body, [{
       type: 'FunctionDeclaration',
       params:
         [{type: 'Identifier', name: 'b'},
@@ -7287,7 +7623,7 @@ var functions$1 = plan()
     }]);
   })
   .test('parse function a(...b){}', t => {
-    t.deepEqual(parse$1('function a(...b){}').body,[ { type: 'FunctionDeclaration',
+    t.deepEqual(parse$2('function a(...b){}').body,[ { type: 'FunctionDeclaration',
       params:
         [ { type: 'RestElement',
           argument: { type: 'Identifier', name: 'b' } } ],
@@ -7298,7 +7634,7 @@ var functions$1 = plan()
       id: { type: 'Identifier', name: 'a' } } ]);
   })
   .test('parse function a(aa,...b){}', t => {
-    t.deepEqual(parse$1('function a(aa,...b){}').body,[ { type: 'FunctionDeclaration',
+    t.deepEqual(parse$2('function a(aa,...b){}').body,[ { type: 'FunctionDeclaration',
       params:
         [ { type: 'Identifier', name: 'aa' },
           { type: 'RestElement',
@@ -7310,7 +7646,7 @@ var functions$1 = plan()
       id: { type: 'Identifier', name: 'a' } } ]);
   })
   .test('parse function a(aa,b = c){}', t => {
-    t.deepEqual(parse$1('function a(aa,b = c){}').body,[ { type: 'FunctionDeclaration',
+    t.deepEqual(parse$2('function a(aa,b = c){}').body,[ { type: 'FunctionDeclaration',
       params:
         [ { type: 'Identifier', name: 'aa' },
           { type: 'AssignmentPattern',
@@ -7323,7 +7659,7 @@ var functions$1 = plan()
       id: { type: 'Identifier', name: 'a' } } ]);
   })
   .test('parse function a(b = c){}', t => {
-    t.deepEqual(parse$1('function a(b = c){}').body,[ { type: 'FunctionDeclaration',
+    t.deepEqual(parse$2('function a(b = c){}').body,[ { type: 'FunctionDeclaration',
       params:
         [ { type: 'AssignmentPattern',
           left: { type: 'Identifier', name: 'b' },
@@ -7335,7 +7671,7 @@ var functions$1 = plan()
       id: { type: 'Identifier', name: 'a' } } ]);
   })
   .test('parse function a([a,{b:{c:d}}] = {}){}', t => {
-    t.deepEqual(parse$1('function a([a,{b:{c:d}}] = {}){}').body,[ { type: 'FunctionDeclaration',
+    t.deepEqual(parse$2('function a([a,{b:{c:d}}] = {}){}').body,[ { type: 'FunctionDeclaration',
       params:
         [ { type: 'AssignmentPattern',
           left:
@@ -7369,25 +7705,25 @@ var functions$1 = plan()
 
 var returns = plan()
   .test('parse function a(){return}', t => {
-    t.deepEqual(parse$1('function a(){return}').body[0].body.body[0], {type: 'ReturnStatement', argument: null});
+    t.deepEqual(parse$2('function a(){return}').body[0].body.body[0], {type: 'ReturnStatement', argument: null});
   })
   .test('parse function a(){return;}', t => {
-    t.deepEqual(parse$1('function a(){return;}').body[0].body.body[0], {type: 'ReturnStatement', argument: null});
+    t.deepEqual(parse$2('function a(){return;}').body[0].body.body[0], {type: 'ReturnStatement', argument: null});
   })
   .test('parse function a(){return blah}', t => {
-    t.deepEqual(parse$1('function a(){return blah}').body[0].body.body[0], {
+    t.deepEqual(parse$2('function a(){return blah}').body[0].body.body[0], {
       type: 'ReturnStatement',
       argument: {type: 'Identifier', name: 'blah'}
     });
   })
   .test('parse function a(){return blah;}', t => {
-    t.deepEqual(parse$1('function a(){return blah;}').body[0].body.body[0], {
+    t.deepEqual(parse$2('function a(){return blah;}').body[0].body.body[0], {
       type: 'ReturnStatement',
       argument: {type: 'Identifier', name: 'blah'}
     });
   })
   .test('parse function a(){return 4+24%2}', t => {
-    t.deepEqual(parse$1('function a(){return 4+24%2}').body[0].body.body[0], {
+    t.deepEqual(parse$2('function a(){return 4+24%2}').body[0].body.body[0], {
       type: 'ReturnStatement',
       argument:
         {
@@ -7405,7 +7741,7 @@ var returns = plan()
     });
   })
   .test('parse function a(){return 4+24%2;}', t => {
-    t.deepEqual(parse$1('function a(){return 4+24%2;}').body[0].body.body[0], {
+    t.deepEqual(parse$2('function a(){return 4+24%2;}').body[0].body.body[0], {
       type: 'ReturnStatement',
       argument:
         {
@@ -7425,7 +7761,7 @@ var returns = plan()
 
 var labels = plan()
   .test('parse test:foo++;', t => {
-    t.deepEqual(parse$1('test:foo++;').body, [{
+    t.deepEqual(parse$2('test:foo++;').body, [{
       type: 'LabeledStatement',
       label: {type: 'Identifier', name: 'test'},
       body:
@@ -7442,7 +7778,7 @@ var labels = plan()
     }]);
   })
   .test('parse bar:function blah(){}', t => {
-    t.deepEqual(parse$1('bar:function blah(){}').body, [{
+    t.deepEqual(parse$2('bar:function blah(){}').body, [{
       type: 'LabeledStatement',
       label: {type: 'Identifier', name: 'bar'},
       body:
@@ -7457,7 +7793,7 @@ var labels = plan()
     }]);
   })
   .test('parse bar:{foo++;}', t => {
-    t.deepEqual(parse$1('bar:{foo++;}').body, [{
+    t.deepEqual(parse$2('bar:{foo++;}').body, [{
       type: 'LabeledStatement',
       label: {type: 'Identifier', name: 'bar'},
       body:
@@ -7480,7 +7816,7 @@ var labels = plan()
 
 var switches = plan()
   .test('parse switch(foo){}', t => {
-    t.deepEqual(parse$1('switch(foo){}').body, [{
+    t.deepEqual(parse$2('switch(foo){}').body, [{
       type: 'SwitchStatement',
       discriminant: {type: 'Identifier', name: 'foo'},
       cases: []
@@ -7497,7 +7833,7 @@ var switches = plan()
       default:
         foo++;
    }`, t => {
-    t.deepEqual(parse$1(`switch(foo){
+    t.deepEqual(parse$2(`switch(foo){
       case "bar":{
         foo++ 
         break;
@@ -7561,7 +7897,7 @@ var switches = plan()
 
 var breakStatements = plan()
   .test('parse while(true){break ;}', t => {
-    t.deepEqual(parse$1('while(true){break ;}').body, [{
+    t.deepEqual(parse$2('while(true){break ;}').body, [{
       type: 'WhileStatement',
       test: {type: 'Literal', value: true},
       body:
@@ -7572,7 +7908,7 @@ var breakStatements = plan()
     }]);
   })
   .test('parse while(true){break}', t => {
-    t.deepEqual(parse$1('while(true){break}').body, [{
+    t.deepEqual(parse$2('while(true){break}').body, [{
       type: 'WhileStatement',
       test: {type: 'Literal', value: true},
       body:
@@ -7583,7 +7919,7 @@ var breakStatements = plan()
     }]);
   })
   .test('parse block:while(true){break block;}', t => {
-    t.deepEqual(parse$1('block:while(true){break block;}').body, [{
+    t.deepEqual(parse$2('block:while(true){break block;}').body, [{
       type: 'LabeledStatement',
       label: {type: 'Identifier', name: 'block'},
       body:
@@ -7603,7 +7939,7 @@ var breakStatements = plan()
     }]);
   })
   .test('parse block:while(true)break block;', t => {
-    t.deepEqual(parse$1('block:while(true)break block;').body, [{
+    t.deepEqual(parse$2('block:while(true)break block;').body, [{
       type: 'LabeledStatement',
       label: {type: 'Identifier', name: 'block'},
       body:
@@ -7621,7 +7957,7 @@ var breakStatements = plan()
 
 var continueStatements = plan()
   .test('parse while(true){continue ;}', t => {
-    t.deepEqual(parse$1('while(true){continue ;}').body, [{
+    t.deepEqual(parse$2('while(true){continue ;}').body, [{
       type: 'WhileStatement',
       test: {type: 'Literal', value: true},
       body:
@@ -7632,7 +7968,7 @@ var continueStatements = plan()
     }]);
   })
   .test('parse while(true){continue}', t => {
-    t.deepEqual(parse$1('while(true){continue}').body, [{
+    t.deepEqual(parse$2('while(true){continue}').body, [{
       type: 'WhileStatement',
       test: {type: 'Literal', value: true},
       body:
@@ -7643,7 +7979,7 @@ var continueStatements = plan()
     }]);
   })
   .test('parse block:while(true){continue block;}', t => {
-    t.deepEqual(parse$1('block:while(true){continue block;}').body, [{
+    t.deepEqual(parse$2('block:while(true){continue block;}').body, [{
       type: 'LabeledStatement',
       label: {type: 'Identifier', name: 'block'},
       body:
@@ -7663,7 +7999,7 @@ var continueStatements = plan()
     }]);
   })
   .test('parse block:while(true)continue block;', t => {
-    t.deepEqual(parse$1('block:while(true)continue block;').body, [{
+    t.deepEqual(parse$2('block:while(true)continue block;').body, [{
       type: 'LabeledStatement',
       label: {type: 'Identifier', name: 'block'},
       body:
@@ -7681,7 +8017,7 @@ var continueStatements = plan()
 
 var withStatements = plan()
   .test('parse with(foo)bar++;', t => {
-    t.deepEqual(parse$1('with(foo)bar++;').body, [{
+    t.deepEqual(parse$2('with(foo)bar++;').body, [{
       type: 'WithStatement',
       object: {type: 'Identifier', name: 'foo'},
       body:
@@ -7698,7 +8034,7 @@ var withStatements = plan()
     }]);
   })
   .test('parse with(foo.bar){test();}', t => {
-    t.deepEqual(parse$1('with(foo.bar){test();}').body, [{
+    t.deepEqual(parse$2('with(foo.bar){test();}').body, [{
       type: 'WithStatement',
       object:
         {
@@ -7726,7 +8062,7 @@ var withStatements = plan()
 
 var throwStatements = plan()
   .test('parse throw new Error("foo")', t => {
-    t.deepEqual(parse$1('throw new Error("foo")').body, [{
+    t.deepEqual(parse$2('throw new Error("foo")').body, [{
       type: 'ThrowStatement',
       argument:
         {
@@ -7737,13 +8073,13 @@ var throwStatements = plan()
     }]);
   })
   .test('parse throw foo;', t => {
-    t.deepEqual(parse$1('throw foo;').body, [{
+    t.deepEqual(parse$2('throw foo;').body, [{
       type: 'ThrowStatement',
       argument: {type: 'Identifier', name: 'foo'}
     }]);
   })
   .test('parse throw null', t => {
-    t.deepEqual(parse$1('throw null').body, [{
+    t.deepEqual(parse$2('throw null').body, [{
       type: 'ThrowStatement',
       argument: {type: 'Literal', value: null}
     }]);
@@ -7751,7 +8087,7 @@ var throwStatements = plan()
 
 var tryCatch = plan()
   .test('parse try {} catch(e){}', t => {
-    t.deepEqual(parse$1('try {} catch(e){}').body, [{
+    t.deepEqual(parse$2('try {} catch(e){}').body, [{
       type: 'TryStatement',
       block: {type: 'BlockStatement', body: []},
       handler:
@@ -7764,7 +8100,7 @@ var tryCatch = plan()
     }]);
   })
   .test('parse try {} catch(e) {} finally {}', t => {
-    t.deepEqual(parse$1('try {} catch(e) {} finally {}').body, [{
+    t.deepEqual(parse$2('try {} catch(e) {} finally {}').body, [{
       type: 'TryStatement',
       block: {type: 'BlockStatement', body: []},
       handler:
@@ -7777,7 +8113,7 @@ var tryCatch = plan()
     }]);
   })
   .test('parse try {} finally {}', t => {
-    t.deepEqual(parse$1('try {} finally {}').body, [{
+    t.deepEqual(parse$2('try {} finally {}').body, [{
       type: 'TryStatement',
       block: {type: 'BlockStatement', body: []},
       handler: null,
@@ -7787,7 +8123,7 @@ var tryCatch = plan()
 
 var destructuring = plan()
   .test('parse var [,a] = b', t => {
-    t.deepEqual(parse$1('var [,a] = b').body, [{
+    t.deepEqual(parse$2('var [,a] = b').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -7803,7 +8139,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [,,a] = b', t => {
-    t.deepEqual(parse$1('var [,,a] = b').body, [{
+    t.deepEqual(parse$2('var [,,a] = b').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -7819,7 +8155,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [,,a,] = b', t => {
-    t.deepEqual(parse$1('var [,,a,] = b').body, [{
+    t.deepEqual(parse$2('var [,,a,] = b').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -7835,7 +8171,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [,,a,,,] = b', t => {
-    t.deepEqual(parse$1('var [,,a,,,] = b').body, [{
+    t.deepEqual(parse$2('var [,,a,,,] = b').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -7851,7 +8187,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [a,] = b', t => {
-    t.deepEqual(parse$1('var [a,] = b').body, [{
+    t.deepEqual(parse$2('var [a,] = b').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -7867,7 +8203,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [a,,] = b', t => {
-    t.deepEqual(parse$1('var [a,,] = b').body, [{
+    t.deepEqual(parse$2('var [a,,] = b').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -7883,7 +8219,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [,...a]=b', t => {
-    t.deepEqual(parse$1('var [,...a]=b').body, [{
+    t.deepEqual(parse$2('var [,...a]=b').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -7904,7 +8240,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [,,...a]=b', t => {
-    t.deepEqual(parse$1('var [,,...a]=b').body, [{
+    t.deepEqual(parse$2('var [,,...a]=b').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -7926,7 +8262,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [a,,...b]=c', t => {
-    t.deepEqual(parse$1('var [a,,...b]=c').body, [{
+    t.deepEqual(parse$2('var [a,,...b]=c').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -7948,7 +8284,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [a,b,...b]=c', t => {
-    t.deepEqual(parse$1('var [a,b,...b]=c').body, [{
+    t.deepEqual(parse$2('var [a,b,...b]=c').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -7970,7 +8306,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [a,b,,...b]=c', t => {
-    t.deepEqual(parse$1('var [a,b,,...b]=c').body, [{
+    t.deepEqual(parse$2('var [a,b,,...b]=c').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -7993,7 +8329,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [a,b,,,...b]=c', t => {
-    t.deepEqual(parse$1('var [a,b,,,...b]=c').body, [{
+    t.deepEqual(parse$2('var [a,b,,,...b]=c').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8017,7 +8353,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [a,,,...b]=c', t => {
-    t.deepEqual(parse$1('var [a,,,...b]=c').body, [{
+    t.deepEqual(parse$2('var [a,,,...b]=c').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8040,7 +8376,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [a] = b', t => {
-    t.deepEqual(parse$1('var [a] = b').body, [{
+    t.deepEqual(parse$2('var [a] = b').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8056,7 +8392,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [a,b] = c', t => {
-    t.deepEqual(parse$1('var [a,b] = c').body, [{
+    t.deepEqual(parse$2('var [a,b] = c').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8074,7 +8410,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [a,b,c] = d', t => {
-    t.deepEqual(parse$1('var [a,b,c] = d').body, [{
+    t.deepEqual(parse$2('var [a,b,c] = d').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8093,7 +8429,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [a,b,,c] = d', t => {
-    t.deepEqual(parse$1('var [a,b,,c] = d').body, [{
+    t.deepEqual(parse$2('var [a,b,,c] = d').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8113,7 +8449,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [a,b,,,c] = d', t => {
-    t.deepEqual(parse$1('var [a,b,,,c] = d').body, [{
+    t.deepEqual(parse$2('var [a,b,,,c] = d').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8134,7 +8470,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [a,,c] = d', t => {
-    t.deepEqual(parse$1('var [a,,c] = d').body, [{
+    t.deepEqual(parse$2('var [a,,c] = d').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8153,7 +8489,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [a,,,c] = d', t => {
-    t.deepEqual(parse$1('var [a,,,c] = d').body, [{
+    t.deepEqual(parse$2('var [a,,,c] = d').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8173,7 +8509,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a} = b', t => {
-    t.deepEqual(parse$1('var {a} = b').body, [{
+    t.deepEqual(parse$2('var {a} = b').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8198,7 +8534,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {[a]:c} = b', t => {
-    t.deepEqual(parse$1('var {[a]:c} = b').body, [{
+    t.deepEqual(parse$2('var {[a]:c} = b').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8223,7 +8559,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a,} = b', t => {
-    t.deepEqual(parse$1('var {a,} = b').body, [{
+    t.deepEqual(parse$2('var {a,} = b').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8248,7 +8584,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a, b} = c', t => {
-    t.deepEqual(parse$1('var {a, b} = c').body, [{
+    t.deepEqual(parse$2('var {a, b} = c').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8282,7 +8618,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a, b, c} = d', t => {
-    t.deepEqual(parse$1('var {a, b, c} = d').body, [{
+    t.deepEqual(parse$2('var {a, b, c} = d').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8325,7 +8661,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a:b} = c', t => {
-    t.deepEqual(parse$1('var {a:b} = c').body, [{
+    t.deepEqual(parse$2('var {a:b} = c').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8350,7 +8686,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a:b, c} = d', t => {
-    t.deepEqual(parse$1('var {a:b, c} = d').body, [{
+    t.deepEqual(parse$2('var {a:b, c} = d').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8384,7 +8720,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a:b, c:d} = e', t => {
-    t.deepEqual(parse$1('var {a:b, c:d} = e').body, [{
+    t.deepEqual(parse$2('var {a:b, c:d} = e').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8418,7 +8754,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a:{b}} = c', t => {
-    t.deepEqual(parse$1('var {a:{b}} = c').body, [{
+    t.deepEqual(parse$2('var {a:{b}} = c').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8456,7 +8792,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a:{b},c} = e', t => {
-    t.deepEqual(parse$1('var {a:{b},c} = e').body, [{
+    t.deepEqual(parse$2('var {a:{b},c} = e').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8503,7 +8839,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a:{b},c:{d}} = e', t => {
-    t.deepEqual(parse$1('var {a:{b},c:{d}} = e').body, [{
+    t.deepEqual(parse$2('var {a:{b},c:{d}} = e').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8563,7 +8899,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a:{b:c},d:{e}} = e', t => {
-    t.deepEqual(parse$1('var {a:{b:c},d:{e}} = e').body, [{
+    t.deepEqual(parse$2('var {a:{b:c},d:{e}} = e').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8623,7 +8959,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a:[{g},c]} = d', t => {
-    t.deepEqual(parse$1('var {a:[{g},c]} = d').body, [{
+    t.deepEqual(parse$2('var {a:[{g},c]} = d').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8666,7 +9002,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a:[g,c]} = d', t => {
-    t.deepEqual(parse$1('var {a:[g,c]} = d').body, [{
+    t.deepEqual(parse$2('var {a:[g,c]} = d').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8697,7 +9033,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [{a:[b]}] = c', t => {
-    t.deepEqual(parse$1('var [{a:[b]}] = c').body, [{
+    t.deepEqual(parse$2('var [{a:[b]}] = c').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8730,7 +9066,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a=5} = b', t => {
-    t.deepEqual(parse$1('var {a=5} = b').body, [{
+    t.deepEqual(parse$2('var {a=5} = b').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8760,7 +9096,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a=5, b=foo} = c', t => {
-    t.deepEqual(parse$1('var {a=5, b=foo} = c').body, [{
+    t.deepEqual(parse$2('var {a=5, b=foo} = c').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8804,7 +9140,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a=5, b} = c', t => {
-    t.deepEqual(parse$1('var {a=5, b} = c').body, [{
+    t.deepEqual(parse$2('var {a=5, b} = c').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8843,7 +9179,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a:aa = 5, b} = c', t => {
-    t.deepEqual(parse$1('var {a:aa = 5, b} = c').body, [{
+    t.deepEqual(parse$2('var {a:aa = 5, b} = c').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8882,7 +9218,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a:aa = 5, b:bb=foo} = c', t => {
-    t.deepEqual(parse$1('var {a:aa = 5, b:bb=foo} = c').body, [{
+    t.deepEqual(parse$2('var {a:aa = 5, b:bb=foo} = c').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8926,7 +9262,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var {a:{b:bb = 5}, b:{bb:asb = foo}} = c', t => {
-    t.deepEqual(parse$1('var {a:{b:bb = 5}, b:{bb:asb = foo}} = c').body, [{
+    t.deepEqual(parse$2('var {a:{b:bb = 5}, b:{bb:asb = foo}} = c').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -8996,7 +9332,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [a=b] = c', t => {
-    t.deepEqual(parse$1('var [a=b] = c').body, [{
+    t.deepEqual(parse$2('var [a=b] = c').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -9017,7 +9353,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [a=b,c =d] = e', t => {
-    t.deepEqual(parse$1('var [a=b,c =d] = e').body, [{
+    t.deepEqual(parse$2('var [a=b,c =d] = e').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -9043,7 +9379,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [[a=b]] = c', t => {
-    t.deepEqual(parse$1('var [[a=b]] = c').body, [{
+    t.deepEqual(parse$2('var [[a=b]] = c').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -9068,7 +9404,7 @@ var destructuring = plan()
     }]);
   })
   .test('parse var [{a=b},c] = d', t => {
-    t.deepEqual(parse$1('var [{a=b},c] = d').body, [{
+    t.deepEqual(parse$2('var [{a=b},c] = d').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -9105,7 +9441,7 @@ var destructuring = plan()
 
 var letDeclaration = plan()
   .test('parse let foo, bar, woot;', t => {
-    t.deepEqual(parse$1('let foo, bar, woot;').body, [{
+    t.deepEqual(parse$2('let foo, bar, woot;').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -9127,7 +9463,7 @@ var letDeclaration = plan()
     }]);
   })
   .test('parse let foo;', t => {
-    t.deepEqual(parse$1('let foo;').body, [{
+    t.deepEqual(parse$2('let foo;').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -9139,7 +9475,7 @@ var letDeclaration = plan()
     }]);
   })
   .test('parse let foo = 54, bar;', t => {
-    t.deepEqual(parse$1('let foo = 54, bar;').body, [{
+    t.deepEqual(parse$2('let foo = 54, bar;').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -9156,7 +9492,7 @@ var letDeclaration = plan()
     }]);
   })
   .test('parse let foo, bar=true;', t => {
-    t.deepEqual(parse$1('let foo, bar=true;').body, [{
+    t.deepEqual(parse$2('let foo, bar=true;').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -9175,7 +9511,7 @@ var letDeclaration = plan()
 
 var constDeclaration = plan()
   .test('parse const foo = 54, bar = bim;', t => {
-    t.deepEqual(parse$1('const foo = 54, bar = bim;').body, [{
+    t.deepEqual(parse$2('const foo = 54, bar = bim;').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -9192,7 +9528,7 @@ var constDeclaration = plan()
     }]);
   })
   .test('parse const bar=true;', t => {
-    t.deepEqual(parse$1('const bar=true;').body, [{
+    t.deepEqual(parse$2('const bar=true;').body, [{
       type: 'VariableDeclaration',
       declarations:
         [{
@@ -9206,7 +9542,7 @@ var constDeclaration = plan()
 
 var classDeclaration = plan()
   .test('parse class test{}', t => {
-    t.deepEqual(parse$1('class test{}').body, [{
+    t.deepEqual(parse$2('class test{}').body, [{
       type: 'ClassDeclaration',
       id: {type: 'Identifier', name: 'test'},
       superClass: null,
@@ -9214,7 +9550,7 @@ var classDeclaration = plan()
     }]);
   })
   .test('parse class test{;}', t => {
-    t.deepEqual(parse$1('class test{;}').body, [{
+    t.deepEqual(parse$2('class test{;}').body, [{
       type: 'ClassDeclaration',
       id: {type: 'Identifier', name: 'test'},
       superClass: null,
@@ -9222,7 +9558,7 @@ var classDeclaration = plan()
     }]);
   })
   .test('parse class test{;;}', t => {
-    t.deepEqual(parse$1('class test{;;}').body, [{
+    t.deepEqual(parse$2('class test{;;}').body, [{
       type: 'ClassDeclaration',
       id: {type: 'Identifier', name: 'test'},
       superClass: null,
@@ -9230,7 +9566,7 @@ var classDeclaration = plan()
     }]);
   })
   .test('parse class test{constructor(){}foo(){}}', t => {
-    t.deepEqual(parse$1('class test{constructor(){}foo(){}}').body, [{
+    t.deepEqual(parse$2('class test{constructor(){}foo(){}}').body, [{
       type: 'ClassDeclaration',
       id: {type: 'Identifier', name: 'test'},
       superClass: null,
@@ -9273,7 +9609,7 @@ var classDeclaration = plan()
     }]);
   })
   .test('parse class test{get blah(){}set blah(foo){}}', t => {
-    t.deepEqual(parse$1('class test{get blah(){}set blah(foo){}}').body, [{
+    t.deepEqual(parse$2('class test{get blah(){}set blah(foo){}}').body, [{
       type: 'ClassDeclaration',
       id: {type: 'Identifier', name: 'test'},
       superClass: null,
@@ -9317,7 +9653,7 @@ var classDeclaration = plan()
     }]);
   })
   .test('parse class test{get(){}set(foo){}}', t => {
-    t.deepEqual(parse$1('class test{get(){}set(foo){}}').body, [{
+    t.deepEqual(parse$2('class test{get(){}set(foo){}}').body, [{
       type: 'ClassDeclaration',
       id: {type: 'Identifier', name: 'test'},
       superClass: null,
@@ -9361,7 +9697,7 @@ var classDeclaration = plan()
     }]);
   })
   .test('parse class test{foo(){}}', t => {
-    t.deepEqual(parse$1('class test{foo(){}}').body, [{
+    t.deepEqual(parse$2('class test{foo(){}}').body, [{
       type: 'ClassDeclaration',
       id: {type: 'Identifier', name: 'test'},
       superClass: null,
@@ -9389,7 +9725,7 @@ var classDeclaration = plan()
     }]);
   })
   .test('parse class test{[foo](){}}', t => {
-    t.deepEqual(parse$1('class test{[foo](){}}').body, [{
+    t.deepEqual(parse$2('class test{[foo](){}}').body, [{
       type: 'ClassDeclaration',
       id: {type: 'Identifier', name: 'test'},
       superClass: null,
@@ -9417,7 +9753,7 @@ var classDeclaration = plan()
     }]);
   })
   .test('parse class test{"foo"(){}}', t => {
-    t.deepEqual(parse$1('class test{"foo"(){}}').body, [{
+    t.deepEqual(parse$2('class test{"foo"(){}}').body, [{
       type: 'ClassDeclaration',
       id: {type: 'Identifier', name: 'test'},
       superClass: null,
@@ -9445,7 +9781,7 @@ var classDeclaration = plan()
     }]);
   })
   .test('parse class test{5(){}}', t => {
-    t.deepEqual(parse$1('class test{5(){}}').body, [{
+    t.deepEqual(parse$2('class test{5(){}}').body, [{
       type: 'ClassDeclaration',
       id: {type: 'Identifier', name: 'test'},
       superClass: null,
@@ -9473,7 +9809,7 @@ var classDeclaration = plan()
     }]);
   })
   .test('parse class a extends b {}', t => {
-    t.deepEqual(parse$1('class a extends b {}').body, [{
+    t.deepEqual(parse$2('class a extends b {}').body, [{
       type: 'ClassDeclaration',
       id: {type: 'Identifier', name: 'a'},
       superClass: {type: 'Identifier', name: 'b'},
@@ -9481,7 +9817,7 @@ var classDeclaration = plan()
     }]);
   })
   .test('parse class a extends b.c {}', t => {
-    t.deepEqual(parse$1('class a extends b.c {}').body, [{
+    t.deepEqual(parse$2('class a extends b.c {}').body, [{
       type: 'ClassDeclaration',
       id: {type: 'Identifier', name: 'a'},
       superClass:
@@ -9495,7 +9831,7 @@ var classDeclaration = plan()
     }]);
   })
   .test('parse class a {static hello(){}static get foo(){}}', t => {
-    t.deepEqual(parse$1('class a {static hello(){}static get foo(){}}').body, [{
+    t.deepEqual(parse$2('class a {static hello(){}static get foo(){}}').body, [{
       type: 'ClassDeclaration',
       id: {type: 'Identifier', name: 'a'},
       superClass: null,
@@ -9539,7 +9875,7 @@ var classDeclaration = plan()
     }]);
   })
   .test('parse class test extends foo{constructor(){super()}}', t => {
-    t.deepEqual(parse$1('class test extends foo{constructor(){super()}}').body, [{
+    t.deepEqual(parse$2('class test extends foo{constructor(){super()}}').body, [{
       type: 'ClassDeclaration',
       id: {type: 'Identifier', name: 'test'},
       superClass: {type: 'Identifier', name: 'foo'},
@@ -9580,7 +9916,7 @@ var classDeclaration = plan()
     }]);
   })
   .test('parse class test {foo(){super["test"]++}}', t => {
-    t.deepEqual(parse$1('class test {foo(){super["test"]++}}').body, [{
+    t.deepEqual(parse$2('class test {foo(){super["test"]++}}').body, [{
       type: 'ClassDeclaration',
       id: {type: 'Identifier', name: 'test'},
       superClass: null,
@@ -9628,7 +9964,7 @@ var classDeclaration = plan()
     }]);
   })
   .test('parse class test {foo(){super.bar}}', t => {
-    t.deepEqual(parse$1('class test {foo(){super.bar}}').body, [{
+    t.deepEqual(parse$2('class test {foo(){super.bar}}').body, [{
       type: 'ClassDeclaration',
       id: {type: 'Identifier', name: 'test'},
       superClass: null,
@@ -10109,6 +10445,91 @@ var modules = plan()
     }]);
   });
 
+var assign = plan()
+  .test('parse [a,b] =[b,a]', t => {
+    t.deepEqual(parse$2('[a,b] = [b,a];').body, [{
+      type: 'ExpressionStatement',
+      expression:
+        {
+          type: 'AssignmentExpression',
+          left:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{type: 'Identifier', name: 'a'},
+                  {type: 'Identifier', name: 'b'}]
+            },
+          operator: '=',
+          right:
+            {
+              type: 'ArrayExpression',
+              elements:
+                [{type: 'Identifier', name: 'b'},
+                  {type: 'Identifier', name: 'a'}]
+            }
+        }
+    }]);
+  })
+  .test('parse [a,...b] =b', t => {
+    t.deepEqual(parse$2('[a, ...b] = b;').body, [{
+      type: 'ExpressionStatement',
+      expression:
+        {
+          type: 'AssignmentExpression',
+          left:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{type: 'Identifier', name: 'a'},
+                  {
+                    type: 'RestElement',
+                    argument: {type: 'Identifier', name: 'b'}
+                  }]
+            },
+          operator: '=',
+          right: {type: 'Identifier', name: 'b'}
+        }
+    }]);
+  })
+  .test('parse [a = b,[c],d = [...e] ] = f', t => {
+    t.deepEqual(parse$2('[a = b,[c],d = [...e] ] = f').body, [{
+      type: 'ExpressionStatement',
+      expression:
+        {
+          type: 'AssignmentExpression',
+          left:
+            {
+              type: 'ArrayPattern',
+              elements:
+                [{
+                  type: 'AssignmentPattern',
+                  left: {type: 'Identifier', name: 'a'},
+                  right: {type: 'Identifier', name: 'b'}
+                },
+                  {
+                    type: 'ArrayPattern',
+                    elements: [{type: 'Identifier', name: 'c'}]
+                  },
+                  {
+                    type: 'AssignmentPattern',
+                    left: {type: 'Identifier', name: 'd'},
+                    right:
+                      {
+                        type: 'ArrayExpression',
+                        elements:
+                          [{
+                            type: 'SpreadElement',
+                            argument: {type: 'Identifier', name: 'e'}
+                          }]
+                      }
+                  }]
+            },
+          operator: '=',
+          right: {type: 'Identifier', name: 'f'}
+        }
+    }]);
+  });
+
 var statements = plan()
   .test(empty)
   .test(ifStatements)
@@ -10131,7 +10552,8 @@ var statements = plan()
   .test(tryCatch)
   .test(destructuring)
   .test(classDeclaration)
-  .test(modules);
+  .test(modules)
+  .test(assign);
 
 plan()
   .test(tokens)

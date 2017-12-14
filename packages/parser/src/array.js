@@ -5,7 +5,6 @@ import {parseAssignmentPattern, parseBindingIdentifierOrPattern} from "./stateme
 // "array" parsing is shared across various components:
 // - as array literals
 // - as array pattern
-
 export const parseRestElement = composeArityOne(RestElement, parser => {
   parser.expect('...');
   return {
