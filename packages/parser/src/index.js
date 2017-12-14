@@ -21,6 +21,9 @@ const parserFactory = (tokens = defaultRegistry) => {
   };
 
   return code => {
+
+    const params = 0;
+
     const tokenStream = stream(code);
     const parser = Object.assign(forwardArrityOne({
         expect: symbol => tokenStream.expect(tokens.get(symbol)), //more convenient to have it from the symbol

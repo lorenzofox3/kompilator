@@ -68,7 +68,6 @@ export const parseFunctionDeclaration = composeArityOne(ast.FunctionDeclaration,
 });
 
 //that is a prefix expression
-//todo we might want to process "parenthesized" expression instead. ie this parser will parse {a},b => a+b whereas it is invalid
 export const parseFunctionExpression = composeArityOne(ast.FunctionExpression, parser => {
   parser.expect('function');
   const generator = parser.eventually('*');
@@ -79,6 +78,8 @@ export const parseFunctionExpression = composeArityOne(ast.FunctionExpression, p
   }
   return Object.assign({id, generator}, parseParamsAndBody(parser));
 });
+
+//todo we might want to process "parenthesized" expression instead. ie this parser will parse {a},b => a+b whereas it is invalid
 const asFormalParameters = (node) => {
   if (node === null) {
     return []

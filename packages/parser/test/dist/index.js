@@ -1333,13 +1333,13 @@ const asBinaryExpression = type => composeArityThree(type, (parser, left, operat
 });
 const parseEqualAssignmentExpression = composeArityThree(AssignmentExpression, (parser, left, operator) => {
   const {type} = left;
-  if(type ==='ArrayExpression' || type === 'ObjectExpression'){
+  if (type === 'ArrayExpression' || type === 'ObjectExpression') {
     toAssignable(left);
   }
   return {
     left,
-    right:parser.expression(parser.getInfixPrecedence(operator)),
-    operator:operator.value
+    right: parser.expression(parser.getInfixPrecedence(operator)),
+    operator: operator.value
   };
 });
 const parseAssignmentExpression = asBinaryExpression(AssignmentExpression);
@@ -1533,7 +1533,6 @@ const parseFunctionDeclaration = composeArityOne(FunctionDeclaration, parser => 
 });
 
 //that is a prefix expression
-//todo we might want to process "parenthesized" expression instead. ie this parser will parse {a},b => a+b whereas it is invalid
 const parseFunctionExpression = composeArityOne(FunctionExpression, parser => {
   parser.expect('function');
   const generator = parser.eventually('*');
@@ -1544,6 +1543,8 @@ const parseFunctionExpression = composeArityOne(FunctionExpression, parser => {
   }
   return Object.assign({id, generator}, parseParamsAndBody(parser));
 });
+
+//todo we might want to process "parenthesized" expression instead. ie this parser will parse {a},b => a+b whereas it is invalid
 const asFormalParameters = (node) => {
   if (node === null) {
     return []
@@ -1834,6 +1835,7 @@ const parserFactory = (tokens = defaultRegistry$1) => {
   };
 
   return code => {
+
     const tokenStream = stream(code);
     const parser = Object.assign(forwardArrityOne({
         expect: symbol => tokenStream.expect(tokens.get(symbol)), //more convenient to have it from the symbol
