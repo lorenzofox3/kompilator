@@ -1,53 +1,32 @@
 import {
-  composeArityOne as Prefix,
-  composeArityThree as Infix
+  composeArityOne,
+  composeArityThree,
+  composeArityTwo,
+  composeArityFour, grammarParams
 } from "./utils";
 import * as ast from "./ast";
-import {categories} from "../../tokenizer/src/tokens";
 import {toAssignable} from "./asAssign";
+import {parseIdentifierName} from "./statements";
 
 // expressions based on Javascript operators whether they are "prefix" or "infix"
 // Note: Functions and Class expressions, Object literals and Array literals are in their own files
 
 //prefix
-const asValue = (type, key) => Prefix(type, (parser) => {
+const asValue = (type, key) => composeArityOne(type, (parser) => {
   const {value: token} = parser.next();
   return key ? {[key]: token.value} : {};
 });
-const asUnaryExpression = (type) => Prefix(type, (parser) => {
+const asUnaryExpression = (type) => composeArityTwo(type, (parser, params) => {
   const {value: token} = parser.next();
   return {
     operator: token.value,
-    argument: parser.expression(parser.getPrefixPrecedence(token)),
+    argument: parser.expression(parser.getPrefixPrecedence(token), params),
     prefix: true
   };
 });
-
-//no reserved word
-export const parseBindingIdentifier = Prefix(ast.Identifier, parser => {
-  const {value: next} = parser.next();
-  if (parser.isReserved(next)) {
-    throw new Error(`Binding identifier can not be reserved keyword "${next.value}"`);
-  }
-  if (next.type !== categories.Identifier) {
-    throw new Error('expected an identifier');
-  }
-  return {
-    name: next.value
-  };
-});
-export const parseIdentifierName = Prefix(ast.Identifier, parser => {
-  const {value: next} = parser.next();
-  if (next.type !== categories.Identifier) {
-    throw new Error('expected an identifier');
-  }
-  return {
-    name: next.value
-  };
-});
-export const parseGroupExpression = (parser) => {
+export const parseGroupExpression = (parser, params) => {
   parser.expect('(');
-  const exp = parser.expression();
+  const exp = parser.expression(-1, params);
   parser.expect(')');
   return exp;
 };
@@ -55,7 +34,7 @@ export const parseUnaryExpression = asUnaryExpression(ast.UnaryExpression);
 export const parseThisExpression = asValue(ast.ThisExpression);
 export const parseSuperExpression = asValue(ast.Super);
 export const parseLiteralExpression = asValue(ast.Literal, 'value');
-export const parseRegularExpressionLiteral = Prefix(ast.Literal, parser => {
+export const parseRegularExpressionLiteral = composeArityOne(ast.Literal, parser => {
   const {value: regexp} = parser.next();
   return {
     value: regexp.value,
@@ -63,79 +42,79 @@ export const parseRegularExpressionLiteral = Prefix(ast.Literal, parser => {
       pattern: regexp.value.source,
       flags: regexp.value.flags
     }
-  }
+  };
 });
 export const parseUpdateExpressionAsPrefix = asUnaryExpression(ast.UpdateExpression);
-export const parseNewExpression = Prefix(ast.NewExpression, parser => {
+export const parseNewExpression = composeArityTwo(ast.NewExpression, (parser, params) => {
   const {value: newToken} = parser.expect('new');
-  const callee = parser.expression(parser.getPrefixPrecedence(newToken));
+  const callee = parser.expression(parser.getPrefixPrecedence(newToken), params);
   return {
     callee: callee.callee ? callee.callee : callee,
     arguments: callee.arguments ? callee.arguments : []
   };
 });
-export const parseYieldExpression = Prefix(ast.YieldExpression, parser => {
-  parser.expect('yield');
-  let delegate = false;
-  if (parser.eventually('*')) {
-    delegate = true;
+export const parseYieldExpression = (parser, params) => {
+  if (params & grammarParams.yield) {
+    parser.expect('yield');
+    const delegate = parser.eventually('*');
+    return ast.YieldExpression({
+      argument: parser.expression(parser.getPrefixPrecedence(parser.get('yield')), params),
+      delegate
+    });
   }
-  return {
-    argument: parser.expression(parser.getPrefixPrecedence(parser.get('yield'))),
-    delegate
-  };
-});
+  return parseIdentifierName(parser, params);
+};
 
 //infix
-const asBinaryExpression = type => Infix(type, (parser, left, operator) => {
+const asBinaryExpression = type => composeArityFour(type, (parser, params, left, operator) => {
   return {
     left,
-    right: parser.expression(parser.getInfixPrecedence(operator)),
+    right: parser.expression(parser.getInfixPrecedence(operator), params),
     operator: operator.value
   };
 });
-export const parseEqualAssignmentExpression = Infix(ast.AssignmentExpression, (parser, left, operator) => {
+export const parseEqualAssignmentExpression = composeArityFour(ast.AssignmentExpression, (parser, params, left, operator) => {
   const {type} = left;
   if (type === 'ArrayExpression' || type === 'ObjectExpression') {
     toAssignable(left);
   }
   return {
     left,
-    right: parser.expression(parser.getInfixPrecedence(operator)),
+    right: parser.expression(parser.getInfixPrecedence(operator), params),
     operator: operator.value
   };
 });
 export const parseAssignmentExpression = asBinaryExpression(ast.AssignmentExpression);
 export const parseBinaryExpression = asBinaryExpression(ast.BinaryExpression);
 export const parseLogicalExpression = asBinaryExpression(ast.LogicalExpression);
-export const parseMemberAccessExpression = Infix(ast.MemberExpression, (parser, left, operator) => {
+export const parseMemberAccessExpression = composeArityFour(ast.MemberExpression, (parser, params, left, operator) => {
   const computed = operator === parser.get('[');
   const node = {
     object: left,
     computed: computed,
-    property: computed ? parser.expression() : parseIdentifierName(parser)
+    property: computed ? parser.expression(-1, params | grammarParams.in) : parseIdentifierName(parser)
   };
   if (computed) {
     parser.expect(']');
   }
   return node;
 });
-export const parseUpdateExpression = Infix(ast.UpdateExpression, (parser, left, operator) => ({
+export const parseUpdateExpression = composeArityFour(ast.UpdateExpression, (parser, params, left, operator) => ({
   argument: left,
   operator: operator.value,
   prefix: false
 }));
-export const parseConditionalExpression = Infix(ast.ConditionalExpression, (parser, test) => {
+export const parseConditionalExpression = composeArityThree(ast.ConditionalExpression, (parser, params, test) => {
   const node = {
     test
   };
-  const commaPrecedence = parser.getInfixPrecedence(parser.get(','));
-  node.consequent = parser.expression(commaPrecedence);
+  const commaPrecedence = parser.getInfixPrecedence(parser.get(','), params);
+  node.consequent = parser.expression(commaPrecedence, params | grammarParams.in);
   parser.expect(':');
-  node.alternate = parser.expression(commaPrecedence);
+  node.alternate = parser.expression(commaPrecedence, params);
   return node;
 });
-export const parseSequenceExpression = Infix(ast.SequenceExpression, (parser, left) => {
+export const parseSequenceExpression = composeArityThree(ast.SequenceExpression, (parser,params, left) => {
   let node = left;
   const comma = parser.get(',');
   const next = parser.expression(parser.getInfixPrecedence(comma));
@@ -144,7 +123,7 @@ export const parseSequenceExpression = Infix(ast.SequenceExpression, (parser, le
   } else {
     node = {
       expressions: [left, next]
-    }
+    };
   }
   return node;
 });

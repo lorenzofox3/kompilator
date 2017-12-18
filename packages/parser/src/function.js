@@ -1,9 +1,13 @@
 import * as ast from './ast';
 import {parseBindingIdentifier} from "./expressions";
-import {parseBlockStatement, parseAssignmentPattern, parseBindingIdentifierOrPattern} from "./statements";
-import {composeArityOne, composeArityTwo} from "./utils";
+import {
+  parseBlockStatement, parseAssignmentPattern, parseBindingIdentifierOrPattern,
+  parseStatementList, parseBindingElement
+} from "./statements";
+import {composeArityOne, composeArityTwo, grammarParams} from "./utils";
 import {parseSpreadExpression, parseRestElement} from "./array";
 import {toAssignable} from "./asAssign";
+import {categories} from "../../tokenizer/src/tokens";
 
 // "function" parsing is shared across multiple components and deserves its own module to mutualize code more easily:
 // - as statement aka function declaration
@@ -12,34 +16,31 @@ import {toAssignable} from "./asAssign";
 // - as method (within object or class body)
 // - as function call
 
-export const parseFormalParameters = (parser, parameters = []) => {
+export const parseFormalParameterList = (parser, params, paramList = []) => {
   const {value: next} = parser.lookAhead();
-  const comma = parser.get(',');
 
   if (next === parser.get(')')) {
-    return parameters;
+    return paramList;
   }
 
   if (next === parser.get('...')) {
-    parameters.push(parseRestElement(parser));
-    return parameters; //rest parameter must be the last
+    paramList.push(parseRestElement(parser, params));
+    return paramList; //rest parameter must be the last
   }
 
-  //todo no elision & defaultParameters must be last ...
-  if (next !== comma) {
-    let param = parseBindingIdentifierOrPattern(parser);
-    if (parser.eventually('=')) {
-      param = parseAssignmentPattern(parser, param);
-    }
-    parameters.push(param);
+  if (next !== parser.get(',')) {
+    paramList.push(parseBindingElement(parser, params));
   } else {
     parser.eat();
+    if (parser.eventually(',')) {
+      throw new Error('Elision not allowed in function parameters');
+    }
   }
-  return parseFormalParameters(parser, parameters);
+  return parseFormalParameterList(parser, paramList);
 };
 export const asPropertyFunction = (parser, prop) => {
   parser.expect('(');
-  const params = parseFormalParameters(parser);
+  const params = parseFormalParameterList(parser);
   parser.expect(')');
   const body = parseBlockStatement(parser);
   return Object.assign(prop, {
@@ -50,35 +51,52 @@ export const asPropertyFunction = (parser, prop) => {
   });
 };
 
-const parseParamsAndBody = parser => {
+const parseParamsAndBody = (parser, params) => {
   parser.expect('(');
-  const params = parseFormalParameters(parser);
+  const paramList = parseFormalParameterList(parser, params);
   parser.expect(')');
-  const body = parseBlockStatement(parser);
-  return {params, body};
+  parser.expect('{');
+  const body = parseStatementList(parser, params | grammarParams.return);
+  parser.expect('}');
+  return {params: paramList, body};
 };
-export const parseFunctionDeclaration = composeArityOne(ast.FunctionDeclaration, parser => {
+const getNewParams = (asGenerator, params) => {
+  let newParams = params;
+  if (asGenerator) {
+    newParams |= grammarParams.yield;
+    newParams &= ~grammarParams.await;
+  } else {
+    newParams &= ~(grammarParams.yield | grammarParams.await);
+  }
+  return newParams;
+};
+
+//todo check +[default] and module declaration
+export const parseFunctionDeclaration = composeArityTwo(ast.FunctionDeclaration, (parser, params) => {
   parser.expect('function');
   const generator = parser.eventually('*');
-  const id = parseBindingIdentifier(parser);
+  const id = parseBindingIdentifier(parser, params);
+  const newParams = getNewParams(generator, params);
   return Object.assign({
     id,
     generator
-  }, parseParamsAndBody(parser));
+  }, parseParamsAndBody(parser, newParams));
 });
 
 //that is a prefix expression
-export const parseFunctionExpression = composeArityOne(ast.FunctionExpression, parser => {
+export const parseFunctionExpression = composeArityTwo(ast.FunctionExpression, (parser, params) => {
   parser.expect('function');
   const generator = parser.eventually('*');
   let id = null;
   const {value: nextToken} = parser.lookAhead();
-  if (nextToken !== parser.get('(')) {
-    id = parseBindingIdentifier(parser);
+  const newParams = getNewParams(generator, params);
+  if (nextToken.type === categories.Identifier) {
+    id = parseBindingIdentifier(parser, newParams);
   }
-  return Object.assign({id, generator}, parseParamsAndBody(parser));
+  return Object.assign({id, generator}, parseParamsAndBody(parser, newParams));
 });
 
+//arrow function
 //todo we might want to process "parenthesized" expression instead. ie this parser will parse {a},b => a+b whereas it is invalid
 const asFormalParameters = (node) => {
   if (node === null) {
@@ -86,7 +104,6 @@ const asFormalParameters = (node) => {
   }
   return node.type === 'SequenceExpression' ? [...node].map(toAssignable) : [toAssignable(node)];
 };
-
 export const parseArrowFunctionExpression = composeArityTwo(ast.ArrowFunctionExpression, (parser, left) => {
   const params = asFormalParameters(left);
   const {value: next} = parser.lookAhead();
@@ -97,6 +114,7 @@ export const parseArrowFunctionExpression = composeArityTwo(ast.ArrowFunctionExp
   };
 });
 
+//function call
 //that is an infix expression
 const parseFunctionCallArguments = (parser, expressions = []) => {
   const {value: next} = parser.lookAhead();

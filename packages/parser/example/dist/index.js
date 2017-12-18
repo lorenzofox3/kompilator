@@ -532,6 +532,16 @@ const withEventualSemiColon = (fn) => parser => {
 const composeArityTwo = (factory, fn) => (a, b) => factory(fn(a, b));
 const composeArityOne = (factory, fn) => _ => factory(fn(_));
 const composeArityThree = (factory, fn) => (a, b, c) => factory(fn(a, b, c));
+const composeArityFour = (factory, fn) => (a, b, c, d) => factory(fn(a, b, c, d));
+
+// these are to forward parameters to grammar production rules ([?yield], [+in], etc)
+const grammarParams = {
+  yield: 1 << 0,
+  await: 1 << 1,
+  in: 1 << 2,
+  return: 1 << 3,
+  default: 1 << 4
+};
 
 const nodeFactory = (defaultOrType, proto = null) => {
   const defaultObj = typeof defaultOrType === 'string' ? {type: defaultOrType} : defaultOrType;
@@ -863,25 +873,22 @@ const toAssignable = node => {
 // Note: Functions and Class expressions, Object literals and Array literals are in their own files
 
 //prefix
-const asValue = (type, key) => composeArityOne(type, (parser) => {
+const asValue = (type, key) => composeArityTwo(type, (parser, params = 0) => {
   const {value: token} = parser.next();
   return key ? {[key]: token.value} : {};
 });
-const asUnaryExpression = (type) => composeArityOne(type, (parser) => {
+const asUnaryExpression = (type) => composeArityTwo(type, (parser, params = 0) => {
   const {value: token} = parser.next();
   return {
     operator: token.value,
-    argument: parser.expression(parser.getPrefixPrecedence(token)),
+    argument: parser.expression(parser.getPrefixPrecedence(token), params),
     prefix: true
   };
 });
 
-//no reserved word
-const parseBindingIdentifier = composeArityOne(Identifier, parser => {
+//todo maybe split between binding identifier and binding reference (for params handling) ?
+const parseBindingIdentifier = composeArityTwo(Identifier, (parser, params = 0) => {
   const {value: next} = parser.next();
-  if (parser.isReserved(next)) {
-    throw new Error(`Binding identifier can not be reserved keyword "${next.value}"`);
-  }
   if (next.type !== categories.Identifier) {
     throw new Error('expected an identifier');
   }
@@ -889,7 +896,7 @@ const parseBindingIdentifier = composeArityOne(Identifier, parser => {
     name: next.value
   };
 });
-const parseIdentifierName = composeArityOne(Identifier, parser => {
+const parseIdentifierName = composeArityTwo(Identifier, (parser, params = 0) => {
   const {value: next} = parser.next();
   if (next.type !== categories.Identifier) {
     throw new Error('expected an identifier');
@@ -927,35 +934,38 @@ const parseNewExpression = composeArityOne(NewExpression, parser => {
     arguments: callee.arguments ? callee.arguments : []
   };
 });
-const parseYieldExpression = composeArityOne(YieldExpression, parser => {
-  parser.expect('yield');
-  let delegate = false;
-  if (parser.eventually('*')) {
-    delegate = true;
+const parseYieldExpression = (parser, params = 0) => {
+  if (params & grammarParams.yield) {
+    parser.expect('yield');
+    let delegate = false;
+    if (parser.eventually('*')) {
+      delegate = true;
+    }
+    return YieldExpression({
+      argument: parser.expression(parser.getPrefixPrecedence(parser.get('yield')), params),
+      delegate
+    });
   }
-  return {
-    argument: parser.expression(parser.getPrefixPrecedence(parser.get('yield'))),
-    delegate
-  };
-});
+  return parseIdentifierName(parser, params);
+};
 
 //infix
-const asBinaryExpression = type => composeArityThree(type, (parser, left, operator) => {
+const asBinaryExpression = type => composeArityFour(type, (parser, params = 0, left, operator) => {
   return {
     left,
-    right: parser.expression(parser.getInfixPrecedence(operator)),
+    right: parser.expression(parser.getInfixPrecedence(operator), params),
     operator: operator.value
   };
 });
 const parseEqualAssignmentExpression = composeArityThree(AssignmentExpression, (parser, left, operator) => {
   const {type} = left;
-  if(type ==='ArrayExpression' || type === 'ObjectExpression'){
+  if (type === 'ArrayExpression' || type === 'ObjectExpression') {
     toAssignable(left);
   }
   return {
     left,
-    right:parser.expression(parser.getInfixPrecedence(operator)),
-    operator:operator.value
+    right: parser.expression(parser.getInfixPrecedence(operator)),
+    operator: operator.value
   };
 });
 const parseAssignmentExpression = asBinaryExpression(AssignmentExpression);
@@ -1149,7 +1159,6 @@ const parseFunctionDeclaration = composeArityOne(FunctionDeclaration, parser => 
 });
 
 //that is a prefix expression
-//todo we might want to process "parenthesized" expression instead. ie this parser will parse {a},b => a+b whereas it is invalid
 const parseFunctionExpression = composeArityOne(FunctionExpression, parser => {
   parser.expect('function');
   const generator = parser.eventually('*');
@@ -1160,6 +1169,8 @@ const parseFunctionExpression = composeArityOne(FunctionExpression, parser => {
   }
   return Object.assign({id, generator}, parseParamsAndBody(parser));
 });
+
+//todo we might want to process "parenthesized" expression instead. ie this parser will parse {a},b => a+b whereas it is invalid
 const asFormalParameters = (node) => {
   if (node === null) {
     return []
@@ -1626,14 +1637,13 @@ const Statement = (factory, fn) => {
   }
 };
 
-const parseStatementList = (parser, exit = ['}'], statements = []) => {
-  const exitTokens = exit.map(s => parser.get(s));
+const parseStatementList = (parser, params = 0, statements = []) => {
   const {done, value: nextToken} = parser.lookAhead();
-  if (done || exitTokens.includes(nextToken)) {
+  if (done || nextToken === parser.get('}')) {
     return statements;
   }
-  statements.push(parseStatement(parser));
-  return parseStatementList(parser, exit, statements);
+  statements.push(parseStatement(parser, params));
+  return parseStatementList(parser, params, statements);
 };
 
 const parseImport = withEventualSemiColon(parseImportDeclaration);
@@ -1655,25 +1665,25 @@ const parseModuleItemList = (parser, items = []) => {
   return parseModuleItemList(parser, items);
 };
 
-const parseExpressionStatement = Statement(ExpressionStatement, parser => ({
-  expression: parser.expression()
+const parseExpressionStatement = composeArityTwo(ExpressionStatement, (parser, params = 0) => ({
+  expression: parser.expression(-1, params | grammarParams.in)
 }));
 
 const parseExpression$1 = withEventualSemiColon(parseExpressionStatement);
-const parseStatement = (parser) => {
+const parseStatement = (parser, params = 0) => {
   const {value: nextToken} = parser.lookAhead();
-  return parser.hasStatement(nextToken) ? parser.getStatement(nextToken)(parser) : parseExpression$1(parser);
+  return parser.hasStatement(nextToken) ? parser.getStatement(nextToken)(parser, params) : parseExpression$1(parser, params);
 };
 
-const parseIfStatement = Statement(IfStatement, parser => {
+const parseIfStatement = composeArityTwo(IfStatement, (parser, params = 0) => {
   parser.expect('if');
   parser.expect('(');
-  const test = parser.expression();
+  const test = parser.expression(-1, params | grammarParams.in);
   parser.expect(')');
-  const consequent = parseStatement(parser);
+  const consequent = parseStatement(parser, params);
   let alternate = null;
   if (parser.eventually('else')) {
-    alternate = parseStatement(parser);
+    alternate = parseStatement(parser, params);
   }
   return {
     test,
@@ -1821,33 +1831,33 @@ const parseAssignmentPattern = Statement(AssignmentPattern, (parser, left) => {
   };
 });
 
-const parseBindingIdentifierOrPattern = parser => {
+const parseBindingIdentifierOrPattern = (parser, params = 0) => {
   const {value: next} = parser.lookAhead();
   if (parser.get('{') === next) {
-    return parseObjectBindingPattern(parser);
+    return parseObjectBindingPattern(parser, params);
   } else if (parser.get('[') === next) {
-    return parseArrayBindingPattern(parser);
+    return parseArrayBindingPattern(parser, params);
   }
-  return parseBindingIdentifier(parser);
+  return parseBindingIdentifier(parser, params);
 };
 
-const asVariableDeclaration = (keyword = 'var') => Statement(VariableDeclaration, parser => {
+const asVariableDeclaration = (keyword = 'var') => composeArityTwo(VariableDeclaration, (parser, params = 0) => {
   parser.expect(keyword);
   return {
     kind: keyword,
-    declarations: parseVariableDeclarators(parser)
+    declarations: parseVariableDeclarators(parser, params)
   };
 });
-const parseVariableDeclarator = Statement(VariableDeclarator, (parser) => {
+const parseVariableDeclarator = composeArityTwo(VariableDeclarator, (parser, params = 0) => {
   const comma = parser.get(',');
-  const node = {id: parseBindingIdentifierOrPattern(parser), init: null};
+  const node = {id: parseBindingIdentifierOrPattern(parser, params), init: null};
   if (parser.eventually('=')) {
-    node.init = parser.expression(parser.getInfixPrecedence(comma));
+    node.init = parser.expression(parser.getInfixPrecedence(comma), params);
   }
   return node;
 });
-const parseVariableDeclarators = (parser, declarators = []) => {
-  const node = parseVariableDeclarator(parser);
+const parseVariableDeclarators = (parser, params = 0, declarators = []) => {
+  const node = parseVariableDeclarator(parser, params);
   const comma = parser.get(',');
   const {value: nextToken} = parser.lookAhead();
 
@@ -1857,7 +1867,7 @@ const parseVariableDeclarators = (parser, declarators = []) => {
     return declarators;
   }
   parser.eat();
-  return parseVariableDeclarators(parser, declarators);
+  return parseVariableDeclarators(parser, params, declarators);
 };
 const parseVariableDeclaration = asVariableDeclaration();
 const parseConstDeclaration = asVariableDeclaration('const');
@@ -2190,16 +2200,16 @@ const parserFactory = (tokens = ECMAScriptTokens) => {
   const getInfixPrecedence = operator => tokens.hasInfix(operator) ? tokens.getInfix(operator).precedence : -1;
   const getPrefixPrecedence = operator => tokens.hasPrefix(operator) ? tokens.getPrefix(operator).precedence : -1;
 
-  const parseInfix = (parser, left, precedence, exits) => {
+  const parseInfix = (parser, params, left, precedence) => {
     parser.disallowRegexp(); //regexp as a literal is a "prefix operator" so a "/" in infix position is a div punctuator
     const {value: operator} = parser.lookAhead();
-    if (!operator || precedence >= getInfixPrecedence(operator) || exits.includes(operator)) {
+    if (!operator || precedence >= getInfixPrecedence(operator) || (operator === parser.get('in') && !(params & grammarParams.in))) {
       return left;
     }
     parser.eat();
     parser.allowRegexp();
-    const nextLeft = tokens.getInfix(operator).parse(parser, left, operator);
-    return parseInfix(parser, nextLeft, precedence, exits);
+    const nextLeft = tokens.getInfix(operator).parse(parser, params, left, operator);
+    return parseInfix(parser, params, nextLeft, precedence);
   };
 
   return code => {
@@ -2209,15 +2219,15 @@ const parserFactory = (tokens = ECMAScriptTokens) => {
         eventually: symbol => tokenStream.eventually(tokens.get(symbol)), //more convenient to have it from the symbol
         getInfixPrecedence,
         getPrefixPrecedence,
-        expression (precedence = -1, exits = []) {
+        expression (precedence = -1, params = 0) {
           parser.allowRegexp(); //regexp as literal is a "prefix operator"
           const {value: token} = parser.lookAhead();
           if (!tokens.hasPrefix(token)) {
             return null;
           }
-          const left = tokens.getPrefix(token).parse(parser);
+          const left = tokens.getPrefix(token).parse(parser, params);
 
-          return parseInfix(parser, left, precedence, exits);
+          return parseInfix(parser, params, left, precedence);
         },
         program () {
           return Program({
@@ -2238,30 +2248,30 @@ const parserFactory = (tokens = ECMAScriptTokens) => {
 
 };
 
-const parseModule = program => {
+
+
+
+
+const parseScript = program => {
   const parse = parserFactory();
-  return parse(program).module();
+  return parse(program).program();
 };
-
-
-
-
 
  //alias
 
-const fs = require('fs');
-const path = require('path');
+// const fs = require('fs');
+// const path = require('path');
 const utils = require('util');
-const programPath = path.resolve(__dirname, '../../src/statements.js');
-const program = fs.readFileSync(programPath, {encoding: 'utf8'});
+// const programPath = path.resolve(__dirname, '../../src/statements.js');
+// const program = fs.readFileSync(programPath, {encoding: 'utf8'});
 // const acorn = require('acorn');
 // const cherow = require('cherow');
 
-// const program = `var c = ({b:[a]})=>a+b`;
+const program = `'foo' in {}`;
 // const ast = parseModule(program);
 // const ast = cherow.parse(program, {sourceType: 'script'});
-const ast = parseModule(program);
-// console.log(utils.inspect(ast, {depth: null, colors: true}));
+const ast = parseScript(program);
+console.log(utils.inspect(ast, {depth: null, colors: true}));
 
 /* browser  */
 // (async function  () {

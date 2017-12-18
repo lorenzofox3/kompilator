@@ -1,243 +1,88 @@
 import * as ast from './ast';
-import {parseBindingIdentifier} from "./expressions";
-import {composeArityTwo, withEventualSemiColon} from "./utils";
+import {composeArityThree, composeArityTwo, grammarParams, withEventualSemiColon} from "./utils";
 import {parseArrayBindingPattern} from "./array";
 import {parseObjectBindingPattern} from "./object";
 import {parseExportDeclaration, parseImportDeclaration} from "./module";
+import {categories} from "../../tokenizer/src/tokens";
 
 // statements
 // Note: Function declarations,class declarations, array and object binding pattern are in they own files
 
-const Statement = (factory, fn) => {
-  if (!fn) {
-    return factory;
-  } else {
-    return composeArityTwo(factory, fn);
-  }
-};
-
-export const parseStatementList = (parser, exit = ['}'], statements = []) => {
-  const exitTokens = exit.map(s => parser.get(s));
+const needToBreak = (parser, nextToken) => !(parser.hasStatement(nextToken) || parser.hasPrefix(nextToken)) || nextToken === parser.get('case') || nextToken === parser.get('default');
+export const parseStatementList = (parser, params, statements = []) => {
   const {done, value: nextToken} = parser.lookAhead();
-  if (done || exitTokens.includes(nextToken)) {
+  // we break if stream is done or next token does not imply a statement
+  // note1: we check for expression statement as well by checking whether the next token matches an expression prefix
+  // note2: we break on "case" and "default" as well as they can't be used to start a new Statement, neither a Declaration neither an identifier in expression
+  if (done || needToBreak(parser, nextToken)) {
     return statements;
   }
-  statements.push(parseStatement(parser));
-  return parseStatementList(parser, exit, statements);
+  statements.push(parseStatement(parser, params));
+  return parseStatementList(parser, params, statements);
 };
+export const parseBlockStatement = composeArityTwo(ast.BlockStatement, (parser, params) => {
+  parser.expect('{');
+  const node = {
+    body: parseStatementList(parser, params)
+  };
+  parser.expect('}');
+  return node;
+});
 
 const parseImport = withEventualSemiColon(parseImportDeclaration);
 const parseExport = withEventualSemiColon(parseExportDeclaration);
-export const parseModuleItemList = (parser, items = []) => {
+export const parseModuleItemList = (parser, params, items = []) => {
   const {done, value: nextToken} = parser.lookAhead();
 
   if (done) {
     return items;
   }
 
-  if (nextToken === parser.get('import')) {
-    items.push(parseImport(parser));
-  } else if (nextToken === parser.get('export')) {
-    items.push(parseExport(parser));
-  } else {
-    items.push(parseStatement(parser));
+  switch (nextToken) {
+    case parser.get('import'):
+      items.push(parseImport(parser, params));
+      break;
+    case parser.get('export'):
+      items.push(parseExport(parser, params));
+      break;
+    default:
+      items.push(parseStatement(parser, params));
   }
   return parseModuleItemList(parser, items);
 };
 
-export const parseExpressionStatement = Statement(ast.ExpressionStatement, parser => ({
-  expression: parser.expression()
-}));
-
-const parseExpression = withEventualSemiColon(parseExpressionStatement);
-export const parseStatement = (parser) => {
+export const parseStatement = (parser, params) => {
   const {value: nextToken} = parser.lookAhead();
-  return parser.hasStatement(nextToken) ? parser.getStatement(nextToken)(parser) : parseExpression(parser);
+  const isReturnAsExpression = (nextToken === parser.get('return') && !(params & grammarParams.return));
+  if (!parser.hasStatement(nextToken) || isReturnAsExpression) {
+    return parseExpression(parser, params);
+  }
+  let newParams = params;
+  switch (nextToken) {
+    case parser.get('function'):
+    case parser.get('class'):
+    case parser.get('async'):
+      newParams &= ~grammarParams.default;
+      break;
+    case parser.get('let'):
+    case parser.get('const'):
+      newParams |= grammarParams.in;
+      break;
+  }
+  const statement = parser.getStatement(nextToken);
+  return statement(parser, newParams);
 };
 
-export const parseIfStatement = Statement(ast.IfStatement, parser => {
-  parser.expect('if');
-  parser.expect('(');
-  const test = parser.expression();
-  parser.expect(')');
-  const consequent = parseStatement(parser);
-  let alternate = null;
-  if (parser.eventually('else')) {
-    alternate = parseStatement(parser);
-  }
-  return {
-    test,
-    consequent,
-    alternate
-  };
-});
-
-export const parseBlockStatement = Statement(ast.BlockStatement, parser => {
-  parser.expect('{');
-  const node = {
-    body: parseStatementList(parser)
-  };
-  parser.expect('}');
-  return node;
-});
-
-export const parseExpressionOrLabeledStatement = parser => {
-  const {value: nextToken} = parser.lookAhead(1);
-  return nextToken === parser.get(':') ? parseLabeledStatement(parser) : parseExpression(parser);
-};
-
-export const parseEmptyStatement = Statement(ast.EmptyStatement, parser => {
-  parser.expect(';');
-});
-
-export const parseDebuggerStatement = Statement(ast.DebuggerStatement);
-
-export const parseReturnStatement = Statement(ast.ReturnStatement, parser => {
-  parser.expect('return');
-  return {
-    argument: parser.expression()
-  };
-});
-
-export const parseBreakStatement = Statement(ast.BreakStatement, parser => {
-  parser.expect('break');
-  return {
-    label: parser.expression(20)
-  };
-});
-
-export const parseContinueStatement = Statement(ast.ContinueStatement, parser => {
-  parser.expect('continue');
-  return {
-    label: parser.expression(20)
-  };
-});
-
-export const parseWithStatement = Statement(ast.WithStatement, parser => {
-  parser.expect('with');
-  parser.expect('(');
-  const object = parser.expression();
-  parser.expect(')');
-  return {
-    object,
-    body: parseStatement(parser)
-  };
-});
-
-export const parseSwitchStatement = Statement(ast.SwitchStatement, parser => {
-  parser.expect('switch');
-  parser.expect('(');
-  const discriminant = parser.expression();
-  parser.expect(')');
-  parser.expect('{');
-  const cases = parseSwitchCases(parser);
-  parser.expect('}');
-  return {
-    discriminant,
-    cases
-  };
-});
-
-export const parseSwitchCases = (parser, cases = []) => {
-  const {value: nextToken} = parser.lookAhead();
-  if (nextToken !== parser.get('case') && nextToken !== parser.get('default')) {
-    return cases;
-  }
-  parser.eat();
-  cases.push(parseSwitchCase(parser, nextToken));
-  return parseSwitchCases(parser, cases);
-};
-
-export const parseSwitchCase = Statement(ast.SwitchCase, (parser, nextToken) => {
-  const node = {
-    test: nextToken === parser.get('case') ? parser.expression() : null
-  };
-  parser.expect(':');
-  node.consequent = parseStatementList(parser, ['}', 'case', 'default']);
-  return node;
-});
-
-export const parseThrowStatement = Statement(ast.ThrowStatement, parser => {
-  parser.expect('throw');
-  return {
-    argument: parser.expression()
-  };
-});
-
-export const parseTryStatement = Statement(ast.TryStatement, parser => {
-  parser.expect('try');
-  const node = {block: parseBlockStatement(parser), handler: null, finalizer: null};
-  if (parser.eventually('catch')) {
-    const handler = {type: 'CatchClause'};
-    parser.expect('(');
-    handler.param = parser.expression();
-    parser.expect(')');
-    handler.body = parseBlockStatement(parser);
-    node.handler = handler;
-  }
-  if (parser.eventually('finally')) {
-    node.finalizer = parseBlockStatement(parser);
-  }
-  return node;
-});
-
-export const parseWhileStatement = Statement(ast.WhileStatement, parser => {
-  parser.expect('while');
-  parser.expect('(');
-  const node = {
-    test: parser.expression()
-  };
-  parser.expect(')');
-  node.body = parseStatement(parser);
-  return node;
-});
-
-export const parseDoWhileStatement = Statement(ast.DoWhileStatement, parser => {
-  parser.expect('do');
-  const node = {
-    body: parseStatement(parser)
-  };
-  parser.expect('while');
-  parser.expect('(');
-  node.test = parser.expression();
-  parser.expect(')');
-  return node;
-});
-
-export const parseAssignmentPattern = Statement(ast.AssignmentPattern, (parser, left) => {
-  return {
-    left,
-    right: parser.expression(parser.getInfixPrecedence(parser.get(',')))
-  };
-});
-
-export const parseBindingIdentifierOrPattern = parser => {
-  const {value: next} = parser.lookAhead();
-  if (parser.get('{') === next) {
-    return parseObjectBindingPattern(parser);
-  } else if (parser.get('[') === next) {
-    return parseArrayBindingPattern(parser);
-  }
-  return parseBindingIdentifier(parser);
-};
-
-const asVariableDeclaration = (keyword = 'var') => Statement(ast.VariableDeclaration, parser => {
-  parser.expect(keyword);
-  return {
-    kind: keyword,
-    declarations: parseVariableDeclarators(parser)
-  };
-});
-const parseVariableDeclarator = Statement(ast.VariableDeclarator, (parser) => {
+const parseVariableDeclarator = composeArityTwo(ast.VariableDeclarator, (parser, params) => {
   const comma = parser.get(',');
-  const node = {id: parseBindingIdentifierOrPattern(parser), init: null};
+  const node = {id: parseBindingIdentifierOrPattern(parser, params), init: null};
   if (parser.eventually('=')) {
-    node.init = parser.expression(parser.getInfixPrecedence(comma));
+    node.init = parser.expression(parser.getInfixPrecedence(comma), params);
   }
   return node;
 });
-export const parseVariableDeclarators = (parser, declarators = []) => {
-  const node = parseVariableDeclarator(parser);
+const parseVariableDeclarators = (parser, params, declarators = []) => {
+  const node = parseVariableDeclarator(parser, params);
   const comma = parser.get(',');
   const {value: nextToken} = parser.lookAhead();
 
@@ -247,12 +92,79 @@ export const parseVariableDeclarators = (parser, declarators = []) => {
     return declarators;
   }
   parser.eat();
-  return parseVariableDeclarators(parser, declarators);
+  return parseVariableDeclarators(parser, params, declarators);
 };
-export const parseVariableDeclaration = asVariableDeclaration();
-export const parseConstDeclaration = asVariableDeclaration('const');
-export const parseLetDeclaration = asVariableDeclaration('let');
+const variableDeclaration = (keyword = 'var') => {
+  const modifier = keyword === 'var' ? grammarParams.in : 0;
+  return composeArityTwo(ast.VariableDeclaration, (parser, params) => {
+    parser.expect(keyword);
+    return {
+      kind: keyword,
+      declarations: parseVariableDeclarators(parser, params | modifier)
+    };
+  });
+};
+export const parseVariableDeclaration = variableDeclaration('var');
+export const parseConstDeclaration = variableDeclaration('const');
+export const parseLetDeclaration = variableDeclaration('let');
 
+export const parseEmptyStatement = parser => {
+  parser.expect(';');
+  return ast.EmptyStatement();
+};
+
+//todo something wrong here (and for others) with exported vs not exported: the exported could be the one with the eventual semi-colon
+export const parseExpressionStatement = composeArityTwo(ast.ExpressionStatement, (parser, params) => ({
+  expression: parser.expression(-1, params | grammarParams.in)
+}));
+const parseExpression = withEventualSemiColon(parseExpressionStatement);
+
+export const parseIfStatement = composeArityTwo(ast.IfStatement, (parser, params) => {
+  parser.expect('if');
+  parser.expect('(');
+  const test = parser.expression(-1, params | grammarParams.in);
+  parser.expect(')');
+  const consequent = parseStatement(parser, params);
+  let alternate = null;
+  if (parser.eventually('else')) {
+    alternate = parseStatement(parser, params);
+  }
+  return {
+    test,
+    consequent,
+    alternate
+  };
+});
+
+export const parseExpressionOrLabeledStatement = (parser, params) => {
+  const {value: nextToken} = parser.lookAhead(1);
+  return nextToken === parser.get(':') ? parseLabeledStatement(parser, params) : parseExpression(parser, params);
+};
+
+export const parseDoWhileStatement = composeArityTwo(ast.DoWhileStatement, (parser, params) => {
+  parser.expect('do');
+  const node = {
+    body: parseStatement(parser, params)
+  };
+  parser.expect('while');
+  parser.expect('(');
+  node.test = parser.expression(-1, params | grammarParams.in);
+  parser.expect(')');
+  return node;
+});
+
+export const parseWhileStatement = composeArityTwo(ast.WhileStatement, (parser, params) => {
+  parser.expect('while');
+  parser.expect('(');
+  const node = {
+    test: parser.expression(-1, params | grammarParams.in)
+  };
+  parser.expect(')');
+  node.body = parseStatement(parser, params);
+  return node;
+});
+
+// /// /// /// todo !
 const getForDerivation = parser => {
   const {value: nextToken} = parser.lookAhead();
   switch (nextToken) {
@@ -264,7 +176,6 @@ const getForDerivation = parser => {
       return asFor;
   }
 };
-
 const asFor = Statement(ast.ForStatement, (parser, init) => {
   parser.expect(';');
   const n = {
@@ -289,34 +200,192 @@ const asForOf = Statement(ast.ForOfStatement, (parser, left) => {
     right: parser.expression()
   };
 });
-
-//todo does not seem to fit all cases
-export const parseForStatement = parser => {
+export const parseForStatement = (parser, params) => {
   parser.expect('for');
   parser.expect('(');
-  const {value: token} = parser.lookAhead();
+  const {value: nextToken} = parser.lookAhead();
   let startExpression, node;
-  if (token === parser.get('var')) {
+
+  switch (nextToken) {
+    case parser.get('var'):
+    case parser.get('const'):
+    case parser.get('let'):
+    default:
+      startExpression = parser.expression(-1, params);
+  }
+
+  //
+  if (nextToken === parser.get('var')) {
     startExpression = parseVariableDeclaration(parser);
-  } else if (token === parser.get('const')) {
+  } else if (nextToken === parser.get('const')) {
     startExpression = parseConstDeclaration(parser);
-  } else if (token === parser.get('let')) {
+  } else if (nextToken === parser.get('let')) {
     startExpression = parseLetDeclaration(parser);
   } else {
-    startExpression = parser.expression(-1, [parser.get('in'), parser.get('of')]); //"in" is not an operator here !
+    startExpression = parser.expression(-1, params);
   }
+  //
+
   const derivation = getForDerivation(parser);
   node = derivation(parser, startExpression);
   parser.expect(')');
   node.body = parseStatement(parser);
   return node;
 };
+/////
 
-export const parseLabeledStatement = Statement(ast.LabeledStatement, parser => {
+const parseCaseClause = composeArityTwo(ast.SwitchCase, (parser, params) => {
+  parser.expect('case');
+  const test = parser.expression(-1, params | grammarParams.in);
+  parser.expect(':');
+  return {
+    test,
+    consequent: parseStatementList(parser, params)
+  };
+});
+const parseDefaultClause = composeArityTwo(ast.SwitchCase, (parser, params) => {
+  parser.expect('default');
+  parser.expect(':');
+  return {
+    test: null,
+    consequent: parseStatementList(parser, params)
+  };
+});
+export const parseSwitchCases = (parser, params, cases = []) => {
+  const {value: nextToken} = parser.lookAhead();
+
+  if (nextToken === parser.get('}')) {
+    return cases;
+  }
+
+  if (nextToken === parser.get('default')) {
+    cases.push(parseDefaultClause(parser, params));
+    return cases;
+  }
+
+  cases.push(parseCaseClause(parser, params));
+  return parseSwitchCases(parser, params, cases);
+};
+export const parseSwitchStatement = composeArityTwo(ast.SwitchStatement, (parser, params) => {
+  parser.expect('switch');
+  parser.expect('(');
+  const discriminant = parser.expression(-1, params | grammarParams.in);
+  parser.expect(')');
+  parser.expect('{');
+  const cases = parseSwitchCases(parser, params);
+  parser.expect('}');
+  return {
+    discriminant,
+    cases
+  };
+});
+
+const parseLabelIdentifier = composeArityTwo(ast.Identifier, (parser, params) => {
+  const newParams = params & ~(grammarParams.yield | grammarParams.await);
+  return parseBindingIdentifier(parser, newParams);
+});
+const withLabel = (keyword, factory) => composeArityTwo(factory, (parser, params) => {
+  parser.expect(keyword);
+  const {value: next} = parser.lookAhead();
+  const label = parser.hasPrefix(next) ? parseLabelIdentifier(parser, params) : null;
+  return {
+    label
+  };
+});
+export const parseLabeledStatement = composeArityTwo(ast.LabeledStatement, (parser, params) => {
   const node = {
-    label: parser.expression(20)
+    label: parseLabelIdentifier(parser, params)
   };
   parser.expect(':');
-  node.body = parseStatement(parser);
+  node.body = parseStatement(parser, params & ~grammarParams.default);
   return node;
 });
+export const parseBreakStatement = withLabel('break', ast.BreakStatement);
+export const parseContinueStatement = withLabel('continue', ast.ContinueStatement);
+
+export const parseReturnStatement = composeArityTwo(ast.ReturnStatement, (parser, params) => {
+  parser.expect('return');
+  return {
+    argument: parser.expression(-1, params | grammarParams.in)
+  };
+});
+
+export const parseWithStatement = composeArityTwo(ast.WithStatement, (parser, params) => {
+  parser.expect('with');
+  parser.expect('(');
+  const object = parser.expression(-1, params | grammarParams.in);
+  parser.expect(')');
+  return {
+    object,
+    body: parseStatement(parser, params)
+  };
+});
+
+export const parseThrowStatement = composeArityTwo(ast.ThrowStatement, (parser, params) => {
+  parser.expect('throw');
+  return {
+    argument: parser.expression(-1, params | grammarParams.in)
+  };
+});
+
+export const parseTryStatement = composeArityTwo(ast.TryStatement, (parser, params) => {
+  parser.expect('try');
+  const node = {block: parseBlockStatement(parser, params), handler: null, finalizer: null};
+  if (parser.eventually('catch')) {
+    const handler = {type: 'CatchClause'};
+    parser.expect('(');
+    handler.param = parseBindingIdentifierOrPattern(parser, params);
+    parser.expect(')');
+    handler.body = parseBlockStatement(parser, params);
+    node.handler = handler;
+  }
+  if (parser.eventually('finally')) {
+    node.finalizer = parseBlockStatement(parser);
+  }
+  return node;
+});
+
+export const parseDebuggerStatement = parser => {
+  parser.expect('debugger');
+  return ast.DebuggerStatement();
+};
+
+export const parseBindingElement = (parser, params) => {
+  const binding = parseBindingIdentifier(parser, params);
+  if (parser.eventually('=')) {
+    return ast.AssignmentPattern({
+      left: binding,
+      right: parser.expression(-1, params | grammarParams.in)
+    });
+  }
+  return binding;
+};
+export const parseBindingIdentifierOrPattern = (parser, params) => {
+  const {value: next} = parser.lookAhead();
+  if (next === parser.get('[')) {
+    return parseArrayBindingPattern(parser, params);
+  } else if (next === parser.get('{')) {
+    return parseObjectBindingPattern(parser, params);
+  }
+  return parseBindingIdentifier(parser, params);
+};
+export const parseBindingIdentifier = composeArityTwo(ast.Identifier, (parser, params) => {
+  const identifier = parseIdentifierName(parser, params);
+  if (parser.isReserved(identifier.value)) {
+    throw new Error(`can not use reseved word  ${identifier.value} as binding identifier`);
+  }
+  return identifier;
+});
+export const parseIdentifierName = composeArityTwo(ast.Identifier, (parser, params) => {
+  const {value: next} = parser.lookAhead();
+  if (next.type !== categories.Identifier) {
+    throw new Error('expected an identifier');
+  }
+  return {
+    name: next.value
+  };
+});
+export const parseAssignmentPattern = composeArityThree(ast.AssignmentPattern, (parser, left, params) => ({
+  left,
+  right: parser.expression(parser.getInfixPrecedence(parser.get(',')), params)
+}));
