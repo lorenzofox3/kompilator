@@ -61,9 +61,9 @@ export const parseModule = program => {
   return parse(program).module();
 };
 
-export const parseExpression = (expression) => {
+export const parseExpression = (expression,precedence = -1, params = 0) => {
   const parse = parserFactory();
-  return parse(expression).expression();
+  return parse(expression).expression(precedence, params);
 };
 
 export const parseScript = program => {

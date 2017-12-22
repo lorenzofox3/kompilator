@@ -176,7 +176,7 @@ const getForDerivation = parser => {
       return asFor;
   }
 };
-const asFor = Statement(ast.ForStatement, (parser, init) => {
+const asFor = composeArityTwo(ast.ForStatement, (parser, init) => {
   parser.expect(';');
   const n = {
     init,
@@ -186,14 +186,14 @@ const asFor = Statement(ast.ForStatement, (parser, init) => {
   n.update = parser.expression();
   return n;
 });
-const asForIn = Statement(ast.ForInStatement, (parser, left) => {
+const asForIn = composeArityTwo(ast.ForInStatement, (parser, left) => {
   parser.expect('in');
   return {
     left,
     right: parser.expression()
   };
 });
-const asForOf = Statement(ast.ForOfStatement, (parser, left) => {
+const asForOf = composeArityTwo(ast.ForOfStatement, (parser, left) => {
   parser.expect('of');
   return {
     left,
@@ -351,7 +351,7 @@ export const parseDebuggerStatement = parser => {
 };
 
 export const parseBindingElement = (parser, params) => {
-  const binding = parseBindingIdentifier(parser, params);
+  const binding = parseBindingIdentifierOrPattern(parser, params);
   if (parser.eventually('=')) {
     return ast.AssignmentPattern({
       left: binding,
@@ -371,8 +371,8 @@ export const parseBindingIdentifierOrPattern = (parser, params) => {
 };
 export const parseBindingIdentifier = composeArityTwo(ast.Identifier, (parser, params) => {
   const identifier = parseIdentifierName(parser, params);
-  if (parser.isReserved(identifier.value)) {
-    throw new Error(`can not use reseved word  ${identifier.value} as binding identifier`);
+  if (parser.isReserved(identifier.name)) {
+    throw new Error(`can not use reseved word  ${identifier.name} as binding identifier`);
   }
   return identifier;
 });
@@ -381,11 +381,12 @@ export const parseIdentifierName = composeArityTwo(ast.Identifier, (parser, para
   if (next.type !== categories.Identifier) {
     throw new Error('expected an identifier');
   }
+  parser.eat();
   return {
     name: next.value
   };
 });
-export const parseAssignmentPattern = composeArityThree(ast.AssignmentPattern, (parser, left, params) => ({
+export const parseAssignmentPattern = composeArityThree(ast.AssignmentPattern, (parser, params, left) => ({
   left,
   right: parser.expression(parser.getInfixPrecedence(parser.get(',')), params)
 }));

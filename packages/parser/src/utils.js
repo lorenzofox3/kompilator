@@ -1,5 +1,5 @@
-export const withEventualSemiColon = (fn) => parser => {
-  const node = fn(parser);
+export const withEventualSemiColon = (fn) => (parser, params) => {
+  const node = fn(parser, params);
   parser.eventually(';');
   return node;
 };

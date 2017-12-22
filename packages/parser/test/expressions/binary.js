@@ -1,5 +1,6 @@
 import {parse} from './utils';
 import zora from 'zora';
+import {grammarParams} from "../../src/utils";
 
 export default zora()
   .test('parse x == y', t => {
@@ -803,7 +804,7 @@ export default zora()
     });
   })
   .test('parse x in y', t => {
-    t.deepEqual(parse('x in y'), {
+    t.deepEqual(parse('x in y', grammarParams.in), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Identifier", "name": "y"},
@@ -811,7 +812,7 @@ export default zora()
     });
   })
   .test('parse x in 5', t => {
-    t.deepEqual(parse('x in 5'), {
+    t.deepEqual(parse('x in 5', grammarParams.in), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": 5},
@@ -819,7 +820,7 @@ export default zora()
     });
   })
   .test('parse x in null', t => {
-    t.deepEqual(parse('x in null'), {
+    t.deepEqual(parse('x in null', grammarParams.in), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": null},
@@ -827,7 +828,7 @@ export default zora()
     });
   })
   .test('parse x in true', t => {
-    t.deepEqual(parse('x in true'), {
+    t.deepEqual(parse('x in true', grammarParams.in), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": true},
@@ -835,7 +836,7 @@ export default zora()
     });
   })
   .test('parse x in "woot woot"', t => {
-    t.deepEqual(parse('x in "woot woot"'), {
+    t.deepEqual(parse('x in "woot woot"', grammarParams.in), {
       "type": "BinaryExpression",
       "left": {"type": "Identifier", "name": "x"},
       "right": {"type": "Literal", "value": "woot woot"},

@@ -1,13 +1,12 @@
 import * as ast from './ast';
-import {parseBindingIdentifier} from "./expressions";
 import {
-  parseBlockStatement, parseAssignmentPattern, parseBindingIdentifierOrPattern,
-  parseStatementList, parseBindingElement
+  parseBlockStatement, parseBindingIdentifier, parseBindingElement
 } from "./statements";
-import {composeArityOne, composeArityTwo, grammarParams} from "./utils";
+import {composeArityThree, composeArityTwo, grammarParams} from "./utils";
 import {parseSpreadExpression, parseRestElement} from "./array";
 import {toAssignable} from "./asAssign";
 import {categories} from "../../tokenizer/src/tokens";
+import {parsePropertyName} from "./object";
 
 // "function" parsing is shared across multiple components and deserves its own module to mutualize code more easily:
 // - as statement aka function declaration
@@ -15,6 +14,17 @@ import {categories} from "../../tokenizer/src/tokens";
 // - as arrow function (expression)
 // - as method (within object or class body)
 // - as function call
+
+const getNewParams = (asGenerator, params) => {
+  let newParams = params;
+  if (asGenerator) {
+    newParams |= grammarParams.yield;
+    newParams &= ~grammarParams.await;
+  } else {
+    newParams &= ~(grammarParams.yield | grammarParams.await);
+  }
+  return newParams;
+};
 
 export const parseFormalParameterList = (parser, params, paramList = []) => {
   const {value: next} = parser.lookAhead();
@@ -28,50 +38,55 @@ export const parseFormalParameterList = (parser, params, paramList = []) => {
     return paramList; //rest parameter must be the last
   }
 
-  if (next !== parser.get(',')) {
-    paramList.push(parseBindingElement(parser, params));
-  } else {
-    parser.eat();
+  if (parser.eventually(',')) {
     if (parser.eventually(',')) {
       throw new Error('Elision not allowed in function parameters');
     }
+  } else {
+    paramList.push(parseBindingElement(parser, params));
   }
-  return parseFormalParameterList(parser, paramList);
+
+  return parseFormalParameterList(parser, params, paramList);
 };
-export const asPropertyFunction = (parser, prop) => {
+export const asPropertyFunction = (parser, params, prop) => {
   parser.expect('(');
-  const params = parseFormalParameterList(parser);
+  const paramList = parseFormalParameterList(parser, params);
   parser.expect(')');
-  const body = parseBlockStatement(parser);
+  const body = parseBlockStatement(parser, params);
   return Object.assign(prop, {
     value: ast.FunctionExpression({
-      params,
+      params: paramList,
       body
     })
   });
 };
+export const parseClassMethod = composeArityTwo(ast.MethodDefinition, (parser, params) => {
+  const isStatic = parser.eventually('static');
+  const asGenerator = parser.eventually('*');
+  const newParams = getNewParams(asGenerator, params);
+
+  const {value: next} = parser.lookAhead();
+  const {value: secondNext} = parser.lookAhead(1);
+  let kind = 'method';
+
+  if ((next === parser.get('get') || next === parser.get('set')) && secondNext !== parser.get('(')) {
+    const {value: accessor} = parser.eat();
+    kind = accessor.value;
+  }
+
+  const prop = parsePropertyName(parser, params);
+  kind = prop.key.name === 'constructor' ? 'constructor' : kind;
+  return Object.assign(asPropertyFunction(parser, newParams, prop), {static: isStatic, kind});
+});
 
 const parseParamsAndBody = (parser, params) => {
   parser.expect('(');
   const paramList = parseFormalParameterList(parser, params);
   parser.expect(')');
-  parser.expect('{');
-  const body = parseStatementList(parser, params | grammarParams.return);
-  parser.expect('}');
+  const body = parseBlockStatement(parser, params | grammarParams.return);
   return {params: paramList, body};
 };
-const getNewParams = (asGenerator, params) => {
-  let newParams = params;
-  if (asGenerator) {
-    newParams |= grammarParams.yield;
-    newParams &= ~grammarParams.await;
-  } else {
-    newParams &= ~(grammarParams.yield | grammarParams.await);
-  }
-  return newParams;
-};
 
-//todo check +[default] and module declaration
 export const parseFunctionDeclaration = composeArityTwo(ast.FunctionDeclaration, (parser, params) => {
   parser.expect('function');
   const generator = parser.eventually('*');
@@ -97,26 +112,26 @@ export const parseFunctionExpression = composeArityTwo(ast.FunctionExpression, (
 });
 
 //arrow function
-//todo we might want to process "parenthesized" expression instead. ie this parser will parse {a},b => a+b whereas it is invalid
 const asFormalParameters = (node) => {
   if (node === null) {
-    return []
+    return [];
   }
   return node.type === 'SequenceExpression' ? [...node].map(toAssignable) : [toAssignable(node)];
 };
-export const parseArrowFunctionExpression = composeArityTwo(ast.ArrowFunctionExpression, (parser, left) => {
-  const params = asFormalParameters(left);
+export const parseArrowFunctionExpression = composeArityThree(ast.ArrowFunctionExpression, (parser, params, left) => {
+  const paramList = asFormalParameters(left, params);
+  const newParams = getNewParams(false, params);
   const {value: next} = parser.lookAhead();
-  const body = next === parser.get('{') ? parseBlockStatement(parser) : parser.expression();
+  const body = next === parser.get('{') ? parseBlockStatement(parser, newParams | grammarParams.return) : parser.expression(-1, newParams);
   return {
-    params,
+    params: paramList,
     body
   };
 });
 
 //function call
 //that is an infix expression
-const parseFunctionCallArguments = (parser, expressions = []) => {
+const parseFunctionCallArguments = (parser, params, expressions = []) => {
   const {value: next} = parser.lookAhead();
   const comma = parser.get(',');
 
@@ -125,21 +140,22 @@ const parseFunctionCallArguments = (parser, expressions = []) => {
   }
 
   if (next === parser.get('...')) {
-    expressions.push(parseSpreadExpression(parser));
-    parser.eventually(',');
-    return expressions;
+    expressions.push(parseSpreadExpression(parser, params));
+  } else if (parser.eventually(',')) {
+    if (parser.eventually(',')) {
+      throw new Error('no elision allowed in function call parameters');
+    }
+  } else {
+    expressions.push(parser.expression(parser.getInfixPrecedence(comma), params | grammarParams.in));
   }
-
-  expressions.push(parser.expression(parser.getInfixPrecedence(comma)));
-  parser.eventually(','); //todo no elision allowed
-  return parseFunctionCallArguments(parser, expressions);
+  return parseFunctionCallArguments(parser, params, expressions);
 };
-export const parseCallExpression = composeArityTwo(ast.CallExpression, (parser, callee) => {
+
+export const parseCallExpression = composeArityThree(ast.CallExpression, (parser, params, callee) => {
   const node = {
     callee,
-    arguments: parseFunctionCallArguments(parser)
+    arguments: parseFunctionCallArguments(parser, params)
   };
   parser.expect(')');
   return node;
 });
-

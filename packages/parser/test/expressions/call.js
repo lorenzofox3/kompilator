@@ -148,4 +148,18 @@ export default zora()
             argument: {type: 'Identifier', name: 'b'}
           }]
     });
+  })
+  .test('parse f(...a,...b,)', t => {
+    t.deepEqual(parse('f(...a,...b,)'), {
+      type: 'CallExpression',
+      callee: {type: 'Identifier', name: 'f'},
+      arguments: [{
+        type: 'SpreadElement',
+        argument: {type: 'Identifier', name: 'a'}
+      },
+        {
+          type: 'SpreadElement',
+          argument: {type: 'Identifier', name: 'b'}
+        }]
+    });
   });

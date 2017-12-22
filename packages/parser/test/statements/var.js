@@ -70,7 +70,7 @@ export default zora()
       kind: 'var'
     }]);
   })
-  .test('parse var foo = 54;', t => {
+  .test('parse var foo = (a,b,c) => a+b+c;', t => {
     t.deepEqual(parse('var foo = (a,b,c) => a+b+c;').body, [{
       "type": "VariableDeclaration",
       "kind": "var",
@@ -101,5 +101,4 @@ export default zora()
         }
       }]
     }]);
-  })
-
+  });

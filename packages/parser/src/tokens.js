@@ -9,6 +9,7 @@ import {
   parseArrowFunctionExpression
 } from "./function";
 import {withEventualSemiColon} from "./utils";
+import {parseIdentifierName} from "./statements";
 
 export const ECMAScriptTokenRegistry = () => {
   const registry = tokenRegistry();
@@ -48,7 +49,7 @@ export const ECMAScriptTokenRegistry = () => {
   //identifiers
   prefixMap.set(registry.get('this'), {parse: expressions.parseThisExpression, precedence: -1});
   prefixMap.set(registry.get('super'), {parse: expressions.parseSuperExpression, precedence: -1});
-  prefixMap.set(categories.Identifier, {parse: expressions.parseIdentifierName, precedence: -1});
+  prefixMap.set(categories.Identifier, {parse: parseIdentifierName, precedence: -1});
   //functions
   prefixMap.set(registry.get('function'), {parse: parseFunctionExpression, precedence: -1});
   prefixMap.set(registry.get('class'), {parse: parseClassExpression, precedence: -1});

@@ -1,83 +1,50 @@
-import {MethodDefinition, ClassBody, ClassExpression, Class} from "./ast";
-import {composeArityOne} from "./utils";
-import {parseBindingIdentifier} from "./expressions";
+import {ClassBody, ClassExpression, Class} from "./ast";
+import {composeArityTwo} from "./utils";
+import {parseBindingIdentifier} from "./statements";
 import {categories} from "../../tokenizer/src/tokens";
-import {asPropertyFunction} from "./function";
-import {parsePropertyName} from "./object";
+import {parseClassMethod} from "./function";
 
-const parseClassMethod = composeArityOne(MethodDefinition, (parser) => {
-  const isStatic = parser.eventually('static');
-  const {value: next} = parser.lookAhead();
-  const {value: secondNext} = parser.lookAhead(1);
-  let prop;
-
-  if (next === parser.get('get') || next === parser.get('set')) {
-    if (secondNext !== parser.get('(')) {
-      const {value: accessor} = parser.eat();
-      prop = Object.assign(parsePropertyName(parser), {kind: accessor.rawValue});
-    } else {
-      prop = {
-        key: parseBindingIdentifier(parser),
-        computed: false
-      }
-    }
-  }
-
-  prop = prop !== void 0 ? prop : parsePropertyName(parser);
-
-  if (prop.kind === void 0) {
-    prop.kind = prop.key.name === 'constructor' ? 'constructor' : 'method';
-  }
-
-  return Object.assign(asPropertyFunction(parser, prop), {static: isStatic});
-});
-const parseClassElementList = (parser, elements = []) => {
+const parseClassElementList = (parser, params, elements = []) => {
   const {value: next} = parser.lookAhead();
   if (next === parser.get('}')) {
     return elements;
   }
-  if (next !== parser.get(';')) {
-    elements.push(parseClassMethod(parser));
-  } else {
-    parser.eat();
+
+  if (!parser.eventually(';')) {
+    elements.push(parseClassMethod(parser, params));
   }
-  return parseClassElementList(parser, elements);
+
+  return parseClassElementList(parser, params, elements);
 };
-export const parseClassBody = composeArityOne(ClassBody, parser => {
+export const parseClassBody = composeArityTwo(ClassBody, (parser, params) => {
   parser.expect('{');
   const node = {
-    body: parseClassElementList(parser)
+    body: parseClassElementList(parser, params)
   };
   parser.expect('}');
   return node;
 });
 
-const parseClassTail = (parser, id) => {
-  let superClass = null;
-
-  if (parser.eventually('extends')) {
-    superClass = parser.expression();
-  }
-
+const parseClassTail = (parser, params, id) => {
+  const superClass = parser.eventually('extends') ? parser.expression(-1, params) : null;
   return {
     id,
     superClass,
-    body: parseClassBody(parser)
+    body: parseClassBody(parser, params)
   };
 };
 
-export const parseClassDeclaration = composeArityOne(Class, parser => {
+export const parseClassDeclaration = composeArityTwo(Class, (parser, params) => {
   parser.expect('class');
-  const id = parseBindingIdentifier(parser);
-  return parseClassTail(parser, id);
+  const id = parseBindingIdentifier(parser, params);
+  return parseClassTail(parser, params, id);
 });
-
-export const parseClassExpression = composeArityOne(ClassExpression, parser => {
+export const parseClassExpression = composeArityTwo(ClassExpression, (parser, params) => {
   parser.expect('class');
   let id = null;
   const {value: next} = parser.lookAhead();
   if (next.type === categories.Identifier && next !== parser.get('extends')) {
     id = parseBindingIdentifier(parser);
   }
-  return parseClassTail(parser, id);
+  return parseClassTail(parser, params, id);
 });

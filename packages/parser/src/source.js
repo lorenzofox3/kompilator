@@ -61,7 +61,7 @@ const tokenStream = ({scanner, tokenRegistry, filter, evaluate}) => {
         number -= 1;
         return number < 1 ? n : this.eat(number);
       }
-    }, stream, 'allowRegexp', 'disallowRegexp', 'allowRightBrace', 'disallowRightBrace');
+    }, stream, 'allowRegexp', 'disallowRegexp');
   };
 };
 

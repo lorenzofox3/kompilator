@@ -1,11 +1,16 @@
 import * as ast from './ast';
 import {categories} from "../../tokenizer/src/tokens";
 import {composeArityOne} from "./utils";
-import {parseBindingIdentifier, parseIdentifierName, parseLiteralExpression} from "./expressions";
-import {parseConstDeclaration, parseLetDeclaration, parseVariableDeclaration} from "./statements";
+import {parseLiteralExpression} from "./expressions";
+import {
+  parseBindingIdentifier,
+  parseIdentifierName,
+  parseConstDeclaration,
+  parseLetDeclaration,
+  parseVariableDeclaration
+} from "./statements";
 import {parseFunctionDeclaration} from "./function";
 import {parseClassDeclaration} from "./class";
-import {parseExpression} from "./index";
 
 const parseNamedImport = (parser, specifiers) => {
   const {value: next} = parser.lookAhead();

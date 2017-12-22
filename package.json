@@ -6,6 +6,7 @@
 		"zora": "^1.0.1"
 	},
 	"dependencies": {
+		"jshint": "^2.9.5",
 		"uglify-es": "^3.2.2"
 	}
 }
