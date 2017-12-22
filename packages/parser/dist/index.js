@@ -963,6 +963,17 @@ const parseArrayLiteralExpression = composeArityTwo(ArrayExpression, (parser, pa
 // - as method (within object or class body)
 // - as function call
 
+const getNewParams = (asGenerator, params) => {
+  let newParams = params;
+  if (asGenerator) {
+    newParams |= grammarParams.yield;
+    newParams &= ~grammarParams.await;
+  } else {
+    newParams &= ~(grammarParams.yield | grammarParams.await);
+  }
+  return newParams;
+};
+
 const parseFormalParameterList = (parser, params, paramList = []) => {
   const {value: next} = parser.lookAhead();
 
@@ -997,6 +1008,24 @@ const asPropertyFunction = (parser, params, prop) => {
     })
   });
 };
+const parseClassMethod = composeArityTwo(MethodDefinition, (parser, params) => {
+  const isStatic = parser.eventually('static');
+  const asGenerator = parser.eventually('*');
+  const newParams = getNewParams(asGenerator, params);
+
+  const {value: next} = parser.lookAhead();
+  const {value: secondNext} = parser.lookAhead(1);
+  let kind = 'method';
+
+  if ((next === parser.get('get') || next === parser.get('set')) && secondNext !== parser.get('(')) {
+    const {value: accessor} = parser.eat();
+    kind = accessor.value;
+  }
+
+  const prop = parsePropertyName(parser, params);
+  kind = prop.key.name === 'constructor' ? 'constructor' : kind;
+  return Object.assign(asPropertyFunction(parser, newParams, prop), {static: isStatic, kind});
+});
 
 const parseParamsAndBody = (parser, params) => {
   parser.expect('(');
@@ -1005,18 +1034,7 @@ const parseParamsAndBody = (parser, params) => {
   const body = parseBlockStatement(parser, params | grammarParams.return);
   return {params: paramList, body};
 };
-const getNewParams = (asGenerator, params) => {
-  let newParams = params;
-  if (asGenerator) {
-    newParams |= grammarParams.yield;
-    newParams &= ~grammarParams.await;
-  } else {
-    newParams &= ~(grammarParams.yield | grammarParams.await);
-  }
-  return newParams;
-};
 
-//todo check +[default] and module declaration
 const parseFunctionDeclaration = composeArityTwo(FunctionDeclaration, (parser, params) => {
   parser.expect('function');
   const generator = parser.eventually('*');
@@ -1042,19 +1060,19 @@ const parseFunctionExpression = composeArityTwo(FunctionExpression, (parser, par
 });
 
 //arrow function
-//todo we might want to process "parenthesized" expression instead. ie this parser will parse {a},b => a+b whereas it is invalid
 const asFormalParameters = (node) => {
   if (node === null) {
     return [];
   }
   return node.type === 'SequenceExpression' ? [...node].map(toAssignable) : [toAssignable(node)];
 };
-const parseArrowFunctionExpression = composeArityTwo(ArrowFunctionExpression, (parser, left) => {
-  const params = asFormalParameters(left);
+const parseArrowFunctionExpression = composeArityThree(ArrowFunctionExpression, (parser, params, left) => {
+  const paramList = asFormalParameters(left, params);
+  const newParams = getNewParams(false, params);
   const {value: next} = parser.lookAhead();
-  const body = next === parser.get('{') ? parseBlockStatement(parser) : parser.expression();
+  const body = next === parser.get('{') ? parseBlockStatement(parser, newParams | grammarParams.return) : parser.expression(-1, newParams);
   return {
-    params,
+    params: paramList,
     body
   };
 });
@@ -1080,6 +1098,7 @@ const parseFunctionCallArguments = (parser, params, expressions = []) => {
   }
   return parseFunctionCallArguments(parser, params, expressions);
 };
+
 const parseCallExpression = composeArityThree(CallExpression, (parser, params, callee) => {
   const node = {
     callee,
@@ -1095,7 +1114,22 @@ const parseCallExpression = composeArityThree(CallExpression, (parser, params, c
 // - within class bodies as well
 
 const asPropertyList = (parseDefinition) => {
-  
+  const fn = (parser, params, properties = []) => {
+    const {value: nextToken} = parser.lookAhead();
+    if (nextToken === parser.get('}')) {
+      return properties;
+    }
+
+    if (parser.eventually(',')) {
+      if (parser.eventually(',')) {
+        throw new Error('Elision not allowed in object property list');
+      }
+    } else {
+      properties.push(parseDefinition(parser, params));
+    }
+    return fn(parser, params, properties);
+  };
+  return fn;
 };
 const parseComputedPropertyName = (parser, params) => {
   parser.expect('[');
@@ -1216,91 +1250,60 @@ const parseObjectBindingPattern = composeArityTwo(ObjectPattern, (parser, params
   return node;
 });
 
-const parseClassMethod = composeArityOne(MethodDefinition, (parser) => {
-  const isStatic = parser.eventually('static');
-  const {value: next} = parser.lookAhead();
-  const {value: secondNext} = parser.lookAhead(1);
-  let prop;
-
-  if (next === parser.get('get') || next === parser.get('set')) {
-    if (secondNext !== parser.get('(')) {
-      const {value: accessor} = parser.eat();
-      prop = Object.assign(parsePropertyName(parser), {kind: accessor.rawValue});
-    } else {
-      prop = {
-        key: parseBindingIdentifier(parser),
-        computed: false
-      };
-    }
-  }
-
-  prop = prop !== void 0 ? prop : parsePropertyName(parser);
-
-  if (prop.kind === void 0) {
-    prop.kind = prop.key.name === 'constructor' ? 'constructor' : 'method';
-  }
-
-  return Object.assign(asPropertyFunction(parser, prop), {static: isStatic});
-});
-const parseClassElementList = (parser, elements = []) => {
+const parseClassElementList = (parser, params, elements = []) => {
   const {value: next} = parser.lookAhead();
   if (next === parser.get('}')) {
     return elements;
   }
-  if (next !== parser.get(';')) {
-    elements.push(parseClassMethod(parser));
-  } else {
-    parser.eat();
+
+  if (!parser.eventually(';')) {
+    elements.push(parseClassMethod(parser, params));
   }
-  return parseClassElementList(parser, elements);
+
+  return parseClassElementList(parser, params, elements);
 };
-const parseClassBody = composeArityOne(ClassBody, parser => {
+const parseClassBody = composeArityTwo(ClassBody, (parser, params) => {
   parser.expect('{');
   const node = {
-    body: parseClassElementList(parser)
+    body: parseClassElementList(parser, params)
   };
   parser.expect('}');
   return node;
 });
 
-const parseClassTail = (parser, id) => {
-  let superClass = null;
-
-  if (parser.eventually('extends')) {
-    superClass = parser.expression();
-  }
-
+const parseClassTail = (parser, params, id) => {
+  const superClass = parser.eventually('extends') ? parser.expression(-1, params) : null;
   return {
     id,
     superClass,
-    body: parseClassBody(parser)
+    body: parseClassBody(parser, params)
   };
 };
 
-const parseClassDeclaration = composeArityOne(Class, parser => {
+const parseClassDeclaration = composeArityTwo(Class, (parser, params) => {
   parser.expect('class');
-  const id = parseBindingIdentifier(parser);
-  return parseClassTail(parser, id);
+  const id = parseBindingIdentifier(parser, params);
+  return parseClassTail(parser, params, id);
 });
-
-const parseClassExpression = composeArityOne(ClassExpression, parser => {
+const parseClassExpression = composeArityTwo(ClassExpression, (parser, params) => {
   parser.expect('class');
   let id = null;
   const {value: next} = parser.lookAhead();
   if (next.type === categories.Identifier && next !== parser.get('extends')) {
     id = parseBindingIdentifier(parser);
   }
-  return parseClassTail(parser, id);
+  return parseClassTail(parser, params, id);
 });
 
-const parseNamedImport = (parser, specifiers) => {
+const getNewParams$1 = params => params & ~(grammarParams.yield | grammarParams.await);
+const parseNamedImport = (parser, params, specifiers) => {
   const {value: next} = parser.lookAhead();
 
   if (next === parser.get('}')) {
     return specifiers;
   }
 
-  const imported = parseIdentifierName(parser);
+  const imported = parseIdentifierName(parser, getNewParams$1(params));
   let hasAs = false;
   if (parser.isReserved(next)) {
     parser.expect('as');
@@ -1309,7 +1312,7 @@ const parseNamedImport = (parser, specifiers) => {
     hasAs = parser.eventually('as');
   }
 
-  const local = hasAs ? parseBindingIdentifier(parser) : imported;
+  const local = hasAs ? parseBindingIdentifier(parser, getNewParams$1(params)) : imported;
 
   specifiers.push(ImportSpecifier({
     local,
@@ -1323,36 +1326,36 @@ const parseNamedImport = (parser, specifiers) => {
     }
   }
 
-  return parseNamedImport(parser, specifiers);
+  return parseNamedImport(parser, params, specifiers);
 };
-const parseImportDefaultSpecifier = (parser, specifiers) => {
+const parseImportDefaultSpecifier = (parser, params, specifiers) => {
   specifiers.push(ImportDefaultSpecifier({
-    local: parseBindingIdentifier(parser)
+    local: parseBindingIdentifier(parser, params)
   }));
   return specifiers;
 };
-const parseImportNamespaceSpecifier = (parser, specifiers) => {
+const parseImportNamespaceSpecifier = (parser, params, specifiers) => {
   parser.expect('*');
   parser.expect('as');
   specifiers.push(ImportNamespaceSpecifier({
-    local: parseBindingIdentifier(parser)
+    local: parseBindingIdentifier(parser, params)
   }));
   return specifiers;
 };
-const parseImportClause = (parser, specifiers = []) => {
+const parseImportClause = (parser, params, specifiers = []) => {
   const {value: next} = parser.lookAhead();
   if (next.type === categories.Identifier) {
 
-    parseImportDefaultSpecifier(parser, specifiers);
+    parseImportDefaultSpecifier(parser, params, specifiers);
 
     if (parser.eventually(',')) {
       const {value: next} = parser.lookAhead();
 
       if (next === parser.get('*')) {
-        return parseImportNamespaceSpecifier(parser, specifiers);
+        return parseImportNamespaceSpecifier(parser, params, specifiers);
       } else if (next === parser.get('{')) {
         parser.expect('{');
-        parseNamedImport(parser, specifiers);
+        parseNamedImport(parser, params, specifiers);
         parser.expect('}');
       } else {
         throw new Error(`expected "{" or "*"`);
@@ -1362,55 +1365,55 @@ const parseImportClause = (parser, specifiers = []) => {
   }
 
   if (next === parser.get('*')) {
-    return parseImportNamespaceSpecifier(parser, specifiers);
+    return parseImportNamespaceSpecifier(parser, params, specifiers);
   }
 
   parser.expect('{');
-  parseNamedImport(parser, specifiers);
+  parseNamedImport(parser, params, specifiers);
   parser.expect('}');
   return specifiers;
 };
-const parseFromClause = (parser) => {
+const parseFromClause = (parser, params) => {
   parser.expect('from');
   const {value: next} = parser.lookAhead();
   if (next.type !== categories.StringLiteral) {
     throw new Error('Expected a string literal');
   }
-  return parseLiteralExpression(parser);
+  return parseLiteralExpression(parser, params);
 };
 
-const parseImportDeclaration = composeArityOne(ImportDeclaration, parser => {
+const parseImportDeclaration = composeArityTwo(ImportDeclaration, (parser, params) => {
   parser.expect('import');
   const {value: next} = parser.lookAhead();
   if (next.type === categories.StringLiteral) {
     return {
       specifiers: [],
-      source: parseLiteralExpression(parser)
+      source: parseLiteralExpression(parser, params)
     };
   }
-  const specifiers = parseImportClause(parser);
-  const source = parseFromClause(parser);
+  const specifiers = parseImportClause(parser, params);
+  const source = parseFromClause(parser, params);
   return {
     source,
     specifiers
   };
 });
 
-const parseExportAllDeclaration = composeArityOne(ExportAllDeclaration, parser => {
+const parseExportAllDeclaration = composeArityTwo(ExportAllDeclaration, (parser, params) => {
   parser.expect('*');
   return {
-    source: parseFromClause(parser)
+    source: parseFromClause(parser, params)
   };
 });
-const parseNamedExportDeclaration = (parser, specifiers = []) => {
+const parseNamedExportDeclaration = (parser, params, specifiers = []) => {
   const {value: next} = parser.lookAhead();
 
   if (next === parser.get('}')) {
     return specifiers;
   }
 
-  const local = parseIdentifierName(parser);
-  const exported = parser.eventually('as') ? parseIdentifierName(parser) : local;
+  const local = parseIdentifierName(parser, params);
+  const exported = parser.eventually('as') ? parseIdentifierName(parser, params) : local;
 
   specifiers.push(ExportSpecifier({
     local,
@@ -1424,50 +1427,50 @@ const parseNamedExportDeclaration = (parser, specifiers = []) => {
     }
   }
 
-  return parseNamedExportDeclaration(parser, specifiers);
+  return parseNamedExportDeclaration(parser, params, specifiers);
 };
-const parseExportAsDeclaration = (fn) => composeArityOne(ExportNamedDeclaration, parser => ({
-  declaration: fn(parser)
+const parseExportAsDeclaration = (fn) => composeArityTwo(ExportNamedDeclaration, (parser, params) => ({
+  declaration: fn(parser, params)
 }));
-const parseExportAsDefaultDeclaration = (fn) => composeArityOne(ExportDefaultDeclaration, parser => ({
-  declaration: fn(parser)
+const parseExportAsDefaultDeclaration = (fn) => composeArityTwo(ExportDefaultDeclaration, (parser, params) => ({
+  declaration: fn(parser, params)
 }));
-const parseExportDeclaration = parser => {
+const parseExportDeclaration = (parser, params) => {
   parser.expect('export');
   const {value: next} = parser.lookAhead();
   switch (next) {
     case parser.get('*'):
-      return parseExportAllDeclaration(parser);
+      return parseExportAllDeclaration(parser, params);
     case parser.get('{'): {
       parser.expect('{');
       const node = ExportNamedDeclaration({
-        specifiers: parseNamedExportDeclaration(parser)
+        specifiers: parseNamedExportDeclaration(parser, params)
       });
       parser.expect('}');
       const {value: next} = parser.lookAhead();
-      node.source = next === parser.get('from') ? parseFromClause(parser) : null;
+      node.source = next === parser.get('from') ? parseFromClause(parser, params) : null;
       return node;
     }
     case parser.get('var'):
-      return parseExportAsDeclaration(parseVariableDeclaration)(parser);
+      return parseExportAsDeclaration(parseVariableDeclaration)(parser, getNewParams$1(params));
     case parser.get('const'):
-      return parseExportAsDeclaration(parseConstDeclaration)(parser);
+      return parseExportAsDeclaration(parseConstDeclaration)(parser, getNewParams$1(params));
     case parser.get('let'):
-      return parseExportAsDeclaration(parseLetDeclaration)(parser);
+      return parseExportAsDeclaration(parseLetDeclaration)(parser, getNewParams$1(params));
     case parser.get('function'):
-      return parseExportAsDeclaration(parseFunctionDeclaration)(parser);
+      return parseExportAsDeclaration(parseFunctionDeclaration)(parser, getNewParams$1(params));
     case parser.get('class'):
-      return parseExportAsDeclaration(parseClassDeclaration)(parser);
+      return parseExportAsDeclaration(parseClassDeclaration)(parser, getNewParams$1(params));
     case parser.get('default'): {
       parser.expect('default');
       const {value: next} = parser.lookAhead();
       switch (next) {
         case parser.get('function'):
-          return parseExportAsDefaultDeclaration(parseFunctionDeclaration)(parser);
+          return parseExportAsDefaultDeclaration(parseFunctionDeclaration)(parser, getNewParams$1(params));
         case parser.get('class'):
-          return parseExportAsDefaultDeclaration(parseClassDeclaration)(parser);
+          return parseExportAsDefaultDeclaration(parseClassDeclaration)(parser, getNewParams$1(params));
         default:
-          return parseExportAsDefaultDeclaration(parser => parser.expression())(parser);
+          return parseExportAsDefaultDeclaration((parser, params) => parser.expression(-1, getNewParams$1(params) & grammarParams.in))(parser, params);
       }
     }
     default:
@@ -1519,7 +1522,7 @@ const parseModuleItemList = (parser, params, items = []) => {
     default:
       items.push(parseStatement(parser, params));
   }
-  return parseModuleItemList(parser, items);
+  return parseModuleItemList(parser, params, items);
 };
 
 const parseStatement = (parser, params) => {
@@ -1822,7 +1825,7 @@ const parseDebuggerStatement = parser => {
 };
 
 const parseBindingElement = (parser, params) => {
-  const binding = parseBindingIdentifier(parser, params);
+  const binding = parseBindingIdentifierOrPattern(parser, params);
   if (parser.eventually('=')) {
     return AssignmentPattern({
       left: binding,
@@ -2230,7 +2233,7 @@ const tokenStream = ({scanner: scanner$$1, tokenRegistry, filter, evaluate}) => 
         number -= 1;
         return number < 1 ? n : this.eat(number);
       }
-    }, stream, 'allowRegexp', 'disallowRegexp', 'allowRightBrace', 'disallowRightBrace');
+    }, stream, 'allowRegexp', 'disallowRegexp');
   };
 };
 

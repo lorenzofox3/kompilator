@@ -8,6 +8,7 @@ import {categories} from "../../tokenizer/src/tokens";
 // statements
 // Note: Function declarations,class declarations, array and object binding pattern are in they own files
 
+// statement list and blocks
 const needToBreak = (parser, nextToken) => !(parser.hasStatement(nextToken) || parser.hasPrefix(nextToken)) || nextToken === parser.get('case') || nextToken === parser.get('default');
 export const parseStatementList = (parser, params, statements = []) => {
   const {done, value: nextToken} = parser.lookAhead();
@@ -28,29 +29,6 @@ export const parseBlockStatement = composeArityTwo(ast.BlockStatement, (parser, 
   parser.expect('}');
   return node;
 });
-
-const parseImport = withEventualSemiColon(parseImportDeclaration);
-const parseExport = withEventualSemiColon(parseExportDeclaration);
-export const parseModuleItemList = (parser, params, items = []) => {
-  const {done, value: nextToken} = parser.lookAhead();
-
-  if (done) {
-    return items;
-  }
-
-  switch (nextToken) {
-    case parser.get('import'):
-      items.push(parseImport(parser, params));
-      break;
-    case parser.get('export'):
-      items.push(parseExport(parser, params));
-      break;
-    default:
-      items.push(parseStatement(parser, params));
-  }
-  return parseModuleItemList(parser, items);
-};
-
 export const parseStatement = (parser, params) => {
   const {value: nextToken} = parser.lookAhead();
   const isReturnAsExpression = (nextToken === parser.get('return') && !(params & grammarParams.return));
@@ -73,6 +51,30 @@ export const parseStatement = (parser, params) => {
   return statement(parser, newParams);
 };
 
+// module highest level statements
+const parseImport = withEventualSemiColon(parseImportDeclaration);
+const parseExport = withEventualSemiColon(parseExportDeclaration);
+export const parseModuleItemList = (parser, params, items = []) => {
+  const {done, value: nextToken} = parser.lookAhead();
+
+  if (done) {
+    return items;
+  }
+
+  switch (nextToken) {
+    case parser.get('import'):
+      items.push(parseImport(parser, params));
+      break;
+    case parser.get('export'):
+      items.push(parseExport(parser, params));
+      break;
+    default:
+      items.push(parseStatement(parser, params));
+  }
+  return parseModuleItemList(parser, params, items);
+};
+
+// variables
 const parseVariableDeclarator = composeArityTwo(ast.VariableDeclarator, (parser, params) => {
   const comma = parser.get(',');
   const node = {id: parseBindingIdentifierOrPattern(parser, params), init: null};
@@ -113,7 +115,7 @@ export const parseEmptyStatement = parser => {
   return ast.EmptyStatement();
 };
 
-//todo something wrong here (and for others) with exported vs not exported: the exported could be the one with the eventual semi-colon
+// expression
 export const parseExpressionStatement = composeArityTwo(ast.ExpressionStatement, (parser, params) => ({
   expression: parser.expression(-1, params | grammarParams.in)
 }));
@@ -164,7 +166,7 @@ export const parseWhileStatement = composeArityTwo(ast.WhileStatement, (parser, 
   return node;
 });
 
-// /// /// /// todo !
+//for
 const getForDerivation = parser => {
   const {value: nextToken} = parser.lookAhead();
   switch (nextToken) {
@@ -176,64 +178,52 @@ const getForDerivation = parser => {
       return asFor;
   }
 };
-const asFor = composeArityTwo(ast.ForStatement, (parser, init) => {
+const asFor = composeArityThree(ast.ForStatement, (parser, params, init) => {
   parser.expect(';');
   const n = {
     init,
-    test: parser.expression()
+    test: parser.expression(-1, params | grammarParams.in)
   };
   parser.expect(';');
-  n.update = parser.expression();
+  n.update = parser.expression(-1, params | grammarParams.in);
   return n;
 });
-const asForIn = composeArityTwo(ast.ForInStatement, (parser, left) => {
+const asForIn = composeArityThree(ast.ForInStatement, (parser, params, left) => {
   parser.expect('in');
   return {
     left,
-    right: parser.expression()
+    right: parser.expression(-1, params | grammarParams.in)
   };
 });
-const asForOf = composeArityTwo(ast.ForOfStatement, (parser, left) => {
+const asForOf = composeArityThree(ast.ForOfStatement, (parser, params, left) => {
   parser.expect('of');
   return {
     left,
-    right: parser.expression()
+    right: parser.expression(-1, params | grammarParams.in)
   };
 });
-export const parseForStatement = (parser, params) => {
-  parser.expect('for');
-  parser.expect('(');
+const getForLeftSide = (parser, params) => {
   const {value: nextToken} = parser.lookAhead();
-  let startExpression, node;
-
   switch (nextToken) {
     case parser.get('var'):
     case parser.get('const'):
     case parser.get('let'):
-    default:
-      startExpression = parser.expression(-1, params);
+      return variableDeclaration(nextToken.value)(parser, params & ~grammarParams.in);
   }
-
-  //
-  if (nextToken === parser.get('var')) {
-    startExpression = parseVariableDeclaration(parser);
-  } else if (nextToken === parser.get('const')) {
-    startExpression = parseConstDeclaration(parser);
-  } else if (nextToken === parser.get('let')) {
-    startExpression = parseLetDeclaration(parser);
-  } else {
-    startExpression = parser.expression(-1, params);
-  }
-  //
-
+  return parser.expression(-1, params & ~grammarParams.in);
+};
+export const parseForStatement = (parser, params) => {
+  parser.expect('for');
+  parser.expect('(');
+  const startExpression = getForLeftSide(parser, params);
   const derivation = getForDerivation(parser);
-  node = derivation(parser, startExpression);
+  const node = derivation(parser, params, startExpression);
   parser.expect(')');
-  node.body = parseStatement(parser);
+  node.body = parseStatement(parser, params);
   return node;
 };
-/////
 
+//switch
 const parseCaseClause = composeArityTwo(ast.SwitchCase, (parser, params) => {
   parser.expect('case');
   const test = parser.expression(-1, params | grammarParams.in);
@@ -350,6 +340,7 @@ export const parseDebuggerStatement = parser => {
   return ast.DebuggerStatement();
 };
 
+// identifiers and bindings
 export const parseBindingElement = (parser, params) => {
   const binding = parseBindingIdentifierOrPattern(parser, params);
   if (parser.eventually('=')) {

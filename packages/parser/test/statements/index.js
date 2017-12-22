@@ -5,6 +5,7 @@ import whileStatements from './while';
 import doWhile from './doWhile';
 import forStatements from './forStatement';
 import forIn from './forIn';
+import forOf from './forOf';
 import varStatement from './var';
 import block from './block';
 import functions from './functionDeclaration';
@@ -27,11 +28,12 @@ export default zora()
   .test(empty)
   .test(ifStatements)
   .test(whileStatements)
-  // .test(forStatements)
-  // .test(forIn)
+  .test(forStatements)
+  .test(forIn)
+  .test(forOf)
   .test(varStatement)
-  // .test(letDeclaration)
-  // .test(constDeclaration)
+  .test(letDeclaration)
+  .test(constDeclaration)
   .test(block)
   .test(returns)
   .test(functions)
@@ -44,6 +46,6 @@ export default zora()
   .test(throwStatements)
   .test(tryCatch)
   .test(destructuring)
-  // .test(classDeclaration)
-  // .test(modules)
+  .test(classDeclaration)
+  .test(modules)
   .test(assign)
