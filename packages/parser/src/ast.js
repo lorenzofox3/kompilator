@@ -1,6 +1,7 @@
 const nodeFactory = (defaultOrType, proto = null) => {
   const defaultObj = typeof defaultOrType === 'string' ? {type: defaultOrType} : defaultOrType;
   return obj => Object.assign(Object.create(proto), defaultObj, obj);
+  // return obj => Object.assign(defaultObj, obj);
 };
 
 const yieldArgument = {
@@ -88,6 +89,13 @@ export const Property = nodeFactory({
   value: null
 }, iterateProperty);
 export const YieldExpression = nodeFactory({type: 'YieldExpression', delegate: false}, yieldArgument);
+export const TemplateLiteral = nodeFactory({type: 'TemplateLiteral'}, {
+  * [Symbol.iterator] () {
+    yield* this.quasis;
+    yield* this.expressions;
+  }
+});
+export const TemplateElement = nodeFactory({type: 'TemplateElement', tail: true});
 
 //infix nodes
 const asBinary = type => nodeFactory(type, yieldLeftRight);
@@ -112,7 +120,7 @@ export const ArrowFunctionExpression = nodeFactory({
   expression: true,
   async: false,
   generator: false,
-  id:null
+  id: null
 }, iterateFunction);
 
 //statements nodes

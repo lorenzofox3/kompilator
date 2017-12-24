@@ -129,6 +129,12 @@ export default zora()
     t.deepEqual(parse('/foo/gi'), {"type": "Literal", "value": {}, "regex": {"pattern": "foo", "flags": "gi"}});
   })
   .test('parse (")")', t => {
-    t.deepEqual(parse('(")")'), {"type": "Literal", "value": ")"}
-    )
+    t.deepEqual(parse('(")")'), {"type": "Literal", "value": ")"})
+  })
+  .only('parse `foo`', t => {
+    t.deepEqual(parse('`foo`'), {
+      "type": "TemplateLiteral", expressions: [], quasis: [
+        {type: 'TemplateElement', tail: true, value: {raw: 'foo', cooked: 'foo'}},
+      ]
+    })
   })

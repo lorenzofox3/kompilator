@@ -7,9 +7,9 @@ export default zora()
     const tokens = [...tokenize('foo = bar / 4')];
     t.deepEqual(tokens.map(tok => tok.type), [
       categories.Identifier,
-      tokensRegistry.get('='),
+      categories.Punctuator,
       categories.Identifier,
-      tokensRegistry.get('/'),
+      categories.Punctuator,
       categories.NumericLiteral
     ]);
   })
@@ -17,7 +17,7 @@ export default zora()
     const tokens = [...tokenize('foo = /bar/g')];
     t.deepEqual(tokens.map(tok => tok.type), [
       categories.Identifier,
-      tokensRegistry.get('='),
+      categories.Punctuator,
       categories.RegularExpressionLiteral
     ]);
   })
@@ -26,7 +26,7 @@ export default zora()
     t.deepEqual(tokens.map(tok => tok.type), [
       categories.TemplateHead,
       categories.Identifier,
-      tokensRegistry.get('+'),
+      categories.Punctuator,
       categories.Identifier,
       categories.TemplateTail
     ]);
@@ -34,17 +34,17 @@ export default zora()
   .test('should be able to switch syntactic context alone (for template literals)', t => {
     const tokens = [...tokenize("if(foo){ bar } else { bim }")];
     t.deepEqual(tokens.map(tok => tok.type), [
-      tokensRegistry.get('if'),
-      tokensRegistry.get('('),
       categories.Identifier,
-      tokensRegistry.get(')'),
-      tokensRegistry.get('{'),
+      categories.Punctuator,
       categories.Identifier,
-      tokensRegistry.get('}'),
-      tokensRegistry.get('else'),
-      tokensRegistry.get('{'),
+      categories.Punctuator,
+      categories.Punctuator,
       categories.Identifier,
-      tokensRegistry.get('}'),
+      categories.Punctuator,
+      categories.Identifier,
+      categories.Punctuator,
+      categories.Identifier,
+      categories.Punctuator
     ]);
   })
   .test('should be able to switch syntactic context alone (for template literals)', t => {
@@ -52,7 +52,7 @@ export default zora()
     t.deepEqual(tokens.map(tok => tok.type), [
       categories.TemplateHead,
       categories.Identifier,
-      tokensRegistry.get('+'),
+      categories.Punctuator,
       categories.Identifier,
       categories.TemplateMiddle,
       categories.Identifier,
@@ -63,16 +63,13 @@ export default zora()
     const tokens = [...tokenize("`foo ${({bim:'blah'})}`")];
     t.deepEqual(tokens.map(tok => tok.type), [
       categories.TemplateHead,
-      tokensRegistry.get('('),
-      tokensRegistry.get('{'),
+      categories.Punctuator,
+      categories.Punctuator,
       categories.Identifier,
-      tokensRegistry.get(':'),
+      categories.Punctuator,
       categories.StringLiteral,
-      tokensRegistry.get('}'),
-      tokensRegistry.get(')'),
+      categories.Punctuator,
+      categories.Punctuator,
       categories.TemplateTail
     ]);
   });
-
-
-

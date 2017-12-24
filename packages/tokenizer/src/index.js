@@ -25,7 +25,7 @@ export const lexemes = (code, scanner) => {
   let context = syntacticFlags.allowRegexp | syntacticFlags.allowRightBrace;
   let previousContext = context;
   const source = sourceStream(code);
-  const holdContext = fn => _ => {
+  const holdContext = fn => () => {
     previousContext = context;
     fn();
   };

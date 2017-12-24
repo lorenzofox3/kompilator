@@ -794,7 +794,6 @@ const templateOrPart = (onExit = categories.Template, onFollow = categories.Temp
     }
 
     return fn(sourceStream, count);
-
   };
   return fn;
 };
@@ -871,7 +870,7 @@ const lexemes = (code, scanner$$1) => {
   let context = syntacticFlags.allowRegexp | syntacticFlags.allowRightBrace;
   let previousContext = context;
   const source = sourceStream(code);
-  const holdContext = fn => _ => {
+  const holdContext = fn => () => {
     previousContext = context;
     fn();
   };
@@ -930,6 +929,7 @@ const grammarParams = {
 const nodeFactory = (defaultOrType, proto = null) => {
   const defaultObj = typeof defaultOrType === 'string' ? {type: defaultOrType} : defaultOrType;
   return obj => Object.assign(Object.create(proto), defaultObj, obj);
+  // return obj => Object.assign(defaultObj, obj);
 };
 
 const yieldArgument = {
@@ -1017,6 +1017,13 @@ const Property = nodeFactory({
   value: null
 }, iterateProperty);
 const YieldExpression = nodeFactory({type: 'YieldExpression', delegate: false}, yieldArgument);
+const TemplateLiteral = nodeFactory({type: 'TemplateLiteral'}, {
+  * [Symbol.iterator] () {
+    yield* this.quasis;
+    yield* this.expressions;
+  }
+});
+const TemplateElement = nodeFactory({type: 'TemplateElement', tail: true});
 
 //infix nodes
 const asBinary = type => nodeFactory(type, yieldLeftRight);
@@ -1041,7 +1048,7 @@ const ArrowFunctionExpression = nodeFactory({
   expression: true,
   async: false,
   generator: false,
-  id:null
+  id: null
 }, iterateFunction);
 
 //statements nodes
@@ -1209,6 +1216,11 @@ const ExportAllDeclaration = nodeFactory('ExportAllDeclaration', {
 
  */
 const toAssignable = node => {
+
+  if (node === null) {
+    return node;
+  }
+
   switch (node.type) {
     case 'ArrayPattern':
     case 'ObjectPattern':
@@ -1216,14 +1228,13 @@ const toAssignable = node => {
     case 'RestElement':
     case 'Identifier':
       break; //skip
-    case 'ArrayExpression': {
+    case 'ArrayExpression':
       node.type = 'ArrayPattern';
       for (let ch of node) {
         toAssignable(ch); //recursive descent
       }
       break;
-    }
-    case 'ObjectExpression': {
+    case 'ObjectExpression':
       node.type = 'ObjectPattern';
       for (let prop of node) {
         if (prop.kind !== 'init' || prop.method) {
@@ -1231,22 +1242,19 @@ const toAssignable = node => {
         }
         toAssignable(prop.value);
       }
-      break
-    }
-    case 'SpreadElement': {
+      break;
+    case 'SpreadElement':
       node.type = 'RestElement';
       toAssignable(node.argument);
       break;
-    }
-    case 'AssignmentExpression': {
+    case 'AssignmentExpression':
       if (node.operator !== '=') {
         throw new Error('can not reinterpret assignment expression with operator different than "="');
       }
       node.type = 'AssignmentPattern';
-      delete node.operator; // operator is not relevant for assignment pattern
-      toAssignable(node.left);//recursive descent
+      delete node.operator;// operator is not relevant for assignment pattern
+      toAssignable(node.left);// recursive descent
       break;
-    }
     default:
       throw new Error(`Unexpected node could not parse "${node.type}" as part of a destructuring pattern `);
   }
@@ -2293,6 +2301,23 @@ const parseYieldExpression = (parser, params) => {
   }
   return parseIdentifierName(parser, params);
 };
+const parseTemplateElement = composeArityTwo(TemplateElement,(parser, params) => {
+  const {value: next} = parser.next();
+  return {
+    value: {
+      raw: next.rawValue,
+      cooked: next.value
+    }
+  };
+});
+const parseTemplateLiteralExpression = composeArityTwo(TemplateLiteral, (parser, params) => {
+  const node = {
+    expressions: [],
+    quasis: [parseTemplateElement(parser, params)]
+  };
+
+  return node;
+});
 
 //infix
 const asBinaryExpression = type => composeArityFour(type, (parser, params, left, operator) => {
@@ -2343,7 +2368,7 @@ const parseConditionalExpression = composeArityThree(ConditionalExpression, (par
   node.alternate = parser.expression(commaPrecedence, params);
   return node;
 });
-const parseSequenceExpression = composeArityThree(SequenceExpression, (parser,params, left) => {
+const parseSequenceExpression = composeArityThree(SequenceExpression, (parser, params, left) => {
   let node = left;
   const comma = parser.get(',');
   const next = parser.expression(parser.getInfixPrecedence(comma));
@@ -2383,6 +2408,10 @@ const ECMAScriptTokenRegistry = () => {
   prefixMap.set(categories.NumericLiteral, {parse: parseLiteralExpression, precedence: -1});
   prefixMap.set(categories.RegularExpressionLiteral, {
     parse: parseRegularExpressionLiteral,
+    precedence: -1
+  });
+  prefixMap.set(categories.Template, {
+    parse: parseTemplateLiteralExpression,
     precedence: -1
   });
   prefixMap.set(registry.get('null'), {parse: parseLiteralExpression, precedence: -1});
@@ -4390,8 +4419,14 @@ var literals = plan()
     t.deepEqual(parse('/foo/gi'), {"type": "Literal", "value": {}, "regex": {"pattern": "foo", "flags": "gi"}});
   })
   .test('parse (")")', t => {
-    t.deepEqual(parse('(")")'), {"type": "Literal", "value": ")"}
-    );
+    t.deepEqual(parse('(")")'), {"type": "Literal", "value": ")"});
+  })
+  .only('parse `foo`', t => {
+    t.deepEqual(parse('`foo`'), {
+      "type": "TemplateLiteral", expressions: [], quasis: [
+        {type: 'TemplateElement', tail: true, value: {raw: 'foo', cooked: 'foo'}},
+      ]
+    });
   });
 
 var conditionals = plan()
@@ -7199,7 +7234,7 @@ var forStatements = plan()
     }]);
   });
 
-var forIn = plan()
+plan()
   .test('parse for(var p in blah){foo++;}', t => {
     t.deepEqual(parse$2('for(var p in blah){foo++;}').body, [{
       type: 'ForInStatement',
@@ -7273,9 +7308,9 @@ var forIn = plan()
       left: {type: 'Identifier', name: 'name'},
       right: {type: 'Identifier', name: 'foo'}
     }]);
-  });
+  })
 
-var forOf = plan()
+plan()
   .test('parse for(var p of blah){foo++;}', t => {
     t.deepEqual(parse$2('for(var p of blah){foo++;}').body, [{
       type: 'ForOfStatement',
@@ -7349,7 +7384,7 @@ var forOf = plan()
       left: {type: 'Identifier', name: 'name'},
       right: {type: 'Identifier', name: 'foo'}
     }]);
-  });
+  })
 
 var varStatement = plan()
   .test('parse var foo, bar, woot;', t => {
@@ -10666,8 +10701,8 @@ var statements = plan()
   .test(ifStatements)
   .test(whileStatements)
   .test(forStatements)
-  .test(forIn)
-  .test(forOf)
+  // .test(forIn)
+  // .test(forOf)
   .test(varStatement)
   .test(letDeclaration)
   .test(constDeclaration)

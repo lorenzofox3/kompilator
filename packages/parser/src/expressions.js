@@ -64,6 +64,23 @@ export const parseYieldExpression = (parser, params) => {
   }
   return parseIdentifierName(parser, params);
 };
+export const parseTemplateElement = composeArityTwo(ast.TemplateElement,(parser, params) => {
+  const {value: next} = parser.next();
+  return {
+    value: {
+      raw: next.rawValue,
+      cooked: next.value
+    }
+  };
+});
+export const parseTemplateLiteralExpression = composeArityTwo(ast.TemplateLiteral, (parser, params) => {
+  const node = {
+    expressions: [],
+    quasis: [parseTemplateElement(parser, params)]
+  };
+
+  return node;
+});
 
 //infix
 const asBinaryExpression = type => composeArityFour(type, (parser, params, left, operator) => {
@@ -114,7 +131,7 @@ export const parseConditionalExpression = composeArityThree(ast.ConditionalExpre
   node.alternate = parser.expression(commaPrecedence, params);
   return node;
 });
-export const parseSequenceExpression = composeArityThree(ast.SequenceExpression, (parser,params, left) => {
+export const parseSequenceExpression = composeArityThree(ast.SequenceExpression, (parser, params, left) => {
   let node = left;
   const comma = parser.get(',');
   const next = parser.expression(parser.getInfixPrecedence(comma));

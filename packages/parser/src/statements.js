@@ -4,6 +4,7 @@ import {parseArrayBindingPattern} from "./array";
 import {parseObjectBindingPattern} from "./object";
 import {parseExportDeclaration, parseImportDeclaration} from "./module";
 import {categories} from "../../tokenizer/src/tokens";
+import {toAssignable} from "./asAssign";
 
 // statements
 // Note: Function declarations,class declarations, array and object binding pattern are in they own files

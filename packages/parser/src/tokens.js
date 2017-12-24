@@ -39,6 +39,10 @@ export const ECMAScriptTokenRegistry = () => {
     parse: expressions.parseRegularExpressionLiteral,
     precedence: -1
   });
+  prefixMap.set(categories.Template, {
+    parse: expressions.parseTemplateLiteralExpression,
+    precedence: -1
+  });
   prefixMap.set(registry.get('null'), {parse: expressions.parseLiteralExpression, precedence: -1});
   prefixMap.set(registry.get('false'), {parse: expressions.parseLiteralExpression, precedence: -1});
   prefixMap.set(registry.get('true'), {parse: expressions.parseLiteralExpression, precedence: -1});

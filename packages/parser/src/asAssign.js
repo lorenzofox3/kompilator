@@ -11,6 +11,11 @@
 
  */
 export const toAssignable = node => {
+
+  if (node === null) {
+    return node;
+  }
+
   switch (node.type) {
     case 'ArrayPattern':
     case 'ObjectPattern':
@@ -18,14 +23,13 @@ export const toAssignable = node => {
     case 'RestElement':
     case 'Identifier':
       break; //skip
-    case 'ArrayExpression': {
+    case 'ArrayExpression':
       node.type = 'ArrayPattern';
       for (let ch of node) {
         toAssignable(ch); //recursive descent
       }
       break;
-    }
-    case 'ObjectExpression': {
+    case 'ObjectExpression':
       node.type = 'ObjectPattern';
       for (let prop of node) {
         if (prop.kind !== 'init' || prop.method) {
@@ -33,22 +37,19 @@ export const toAssignable = node => {
         }
         toAssignable(prop.value);
       }
-      break
-    }
-    case 'SpreadElement': {
+      break;
+    case 'SpreadElement':
       node.type = 'RestElement';
       toAssignable(node.argument);
       break;
-    }
-    case 'AssignmentExpression': {
+    case 'AssignmentExpression':
       if (node.operator !== '=') {
         throw new Error('can not reinterpret assignment expression with operator different than "="');
       }
       node.type = 'AssignmentPattern';
-      delete node.operator; // operator is not relevant for assignment pattern
-      toAssignable(node.left);//recursive descent
+      delete node.operator;// operator is not relevant for assignment pattern
+      toAssignable(node.left);// recursive descent
       break;
-    }
     default:
       throw new Error(`Unexpected node could not parse "${node.type}" as part of a destructuring pattern `);
   }

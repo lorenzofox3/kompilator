@@ -236,7 +236,6 @@ const templateOrPart = (onExit = categories.Template, onFollow = categories.Temp
     }
 
     return fn(sourceStream, count);
-
   };
   return fn;
 };
