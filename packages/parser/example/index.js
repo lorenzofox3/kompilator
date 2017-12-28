@@ -26,7 +26,7 @@ const utils = require('util');
 const acorn = require('acorn');
 // const cherow = require('cherow');
 
-const program = '`foo`';
+const program = '`foo ${ {foo:`${\'blah\'}`}.foo} bar`';
 console.log(utils.inspect(acorn.parse(program), {depth: null, colors: true}))
 // const ast = parseScript(program);
 // const ast = cherow.parse(program, {sourceType: 'script'});

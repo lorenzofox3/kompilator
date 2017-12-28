@@ -519,16 +519,20 @@ const tokenRegistry = () => {
     get (key) {
       return tokenMap.get(key)
     },
-    isReserved(symbol){
+    isReserved (symbol) {
       return reservedKeywords.includes(symbol)
     },
     evaluate (lexeme) {
       if (!tokenMap.has(lexeme.rawValue)) {
         switch (lexeme.type) {
+          case categories.TemplateTail:
+          case categories.Template:
+            return Object.assign(lexeme, {value: lexeme.rawValue.slice(1, -1)});
+          case categories.TemplateHead:
+          case categories.TemplateMiddle:
+            return Object.assign(lexeme, {value: lexeme.rawValue.slice(1, -2)});
           case categories.StringLiteral:
-            return Object.assign(lexeme, {
-              value: lexeme.rawValue.substr(1, lexeme.rawValue.length - 2)
-            });
+            return Object.assign(lexeme, {value: lexeme.rawValue.substr(1, lexeme.rawValue.length - 2)});
           case categories.NumericLiteral:
             return Object.assign(lexeme, {value: Number(lexeme.rawValue)});
           case categories.RegularExpressionLiteral:
@@ -868,12 +872,7 @@ todo: later we can give ability to the consumer to configure the scanner to perf
 //The consumer (like a parser) will have to handle the syntactic state and the token evaluation by itself
 const lexemes = (code, scanner$$1) => {
   let context = syntacticFlags.allowRegexp | syntacticFlags.allowRightBrace;
-  let previousContext = context;
   const source = sourceStream(code);
-  const holdContext = fn => () => {
-    previousContext = context;
-    fn();
-  };
   return {
     * [Symbol.iterator] () {
       while (true) {
@@ -883,27 +882,29 @@ const lexemes = (code, scanner$$1) => {
         yield scanner$$1(source, context);
       }
     },
-    restoreContext () {
-      context = previousContext;
-    },
-    allowRegexp: holdContext(() => {
+    allowRegexp: () => {
       context |= syntacticFlags.allowRegexp;
-    }),
-    disallowRegexp: holdContext(() => {
+    },
+    disallowRegexp: () => {
       context &= ~syntacticFlags.allowRegexp;
-    }),
-    allowRightBrace: holdContext(() => { // as punctuator vs template middle/tail
+    },
+    allowRightBrace: () => { // as punctuator vs template middle/tail
+      const current = context;
       context |= syntacticFlags.allowRightBrace;
-    }),
-    disallowRightBrace: holdContext(() => {
+      return () => context = current;
+    },
+    disallowRightBrace: () => {
+      const current = context;
       context &= ~syntacticFlags.allowRightBrace;
-    }),
+      return () => context = current;
+    },
     loc () {
       return source.loc();
     }
   }
 };
 
+//todo clean that shit ...
 // a standalone tokenizer (ie uses some heuristics based on the last meaningful token to know how to scan a slash)
 // https://stackoverflow.com/questions/5519596/when-parsing-javascript-what-determines-the-meaning-of-a-slash
 
@@ -1599,10 +1600,12 @@ const parsePropertyDefinition = composeArityTwo(Property, (parser, params) => {
 const parsePropertyList = asPropertyList(parsePropertyDefinition);
 const parseObjectLiteralExpression = composeArityTwo(ObjectExpression, (parser, params) => {
   parser.expect('{');
+  const resume = parser.allowRightBrace();
   const node = {
     properties: parsePropertyList(parser, params)
   };
   parser.expect('}');
+  resume();
   return node;
 });
 
@@ -1641,6 +1644,7 @@ const parseObjectBindingPattern = composeArityTwo(ObjectPattern, (parser, params
 
 const parseClassElementList = (parser, params, elements = []) => {
   const {value: next} = parser.lookAhead();
+
   if (next === parser.get('}')) {
     return elements;
   }
@@ -1653,10 +1657,12 @@ const parseClassElementList = (parser, params, elements = []) => {
 };
 const parseClassBody = composeArityTwo(ClassBody, (parser, params) => {
   parser.expect('{');
+  const resume = parser.allowRightBrace();
   const node = {
     body: parseClassElementList(parser, params)
   };
   parser.expect('}');
+  resume();
   return node;
 });
 
@@ -1886,10 +1892,12 @@ const parseStatementList = (parser, params, statements = []) => {
 };
 const parseBlockStatement = composeArityTwo(BlockStatement, (parser, params) => {
   parser.expect('{');
+  const resume = parser.allowRightBrace();
   const node = {
     body: parseStatementList(parser, params)
   };
   parser.expect('}');
+  resume();
   return node;
 });
 const parseStatement = (parser, params) => {
@@ -2301,21 +2309,32 @@ const parseYieldExpression = (parser, params) => {
   }
   return parseIdentifierName(parser, params);
 };
-const parseTemplateElement = composeArityTwo(TemplateElement,(parser, params) => {
+const parseTemplateElement = composeArityTwo(TemplateElement, (parser, params) => {
   const {value: next} = parser.next();
   return {
+    tail: (next.type === categories.TemplateTail || next.type === categories.Template),
     value: {
-      raw: next.rawValue,
+      raw: next.value,
       cooked: next.value
     }
   };
 });
-const parseTemplateLiteralExpression = composeArityTwo(TemplateLiteral, (parser, params) => {
-  const node = {
-    expressions: [],
-    quasis: [parseTemplateElement(parser, params)]
-  };
+const parseTemplateElementList = (parser, params, list = {quasis: [], expressions: []}) => {
+  const {value: next} = parser.lookAhead();
+  list.quasis.push(parseTemplateElement(parser, params));
 
+  if (next.type === categories.TemplateTail || next.type === categories.Template) {
+    return list;
+  }
+
+  list.expressions.push(parser.expression(-1, params | grammarParams.in));
+
+  return parseTemplateElementList(parser, params, list);
+};
+const parseTemplateLiteralExpression = composeArityTwo(TemplateLiteral, (parser, params) => {
+  const resume = parser.disallowRightBrace();
+  const node = parseTemplateElementList(parser, params);
+  resume();
   return node;
 });
 
@@ -2411,6 +2430,10 @@ const ECMAScriptTokenRegistry = () => {
     precedence: -1
   });
   prefixMap.set(categories.Template, {
+    parse: parseTemplateLiteralExpression,
+    precedence: -1
+  });
+  prefixMap.set(categories.TemplateHead, {
     parse: parseTemplateLiteralExpression,
     precedence: -1
   });
@@ -2634,7 +2657,7 @@ const tokenStream = ({scanner: scanner$$1, tokenRegistry, filter, evaluate}) => 
         number -= 1;
         return number < 1 ? n : this.eat(number);
       }
-    }, stream, 'allowRegexp', 'disallowRegexp');
+    }, stream, 'allowRegexp', 'disallowRegexp', 'allowRightBrace', 'disallowRightBrace');
   };
 };
 
@@ -2750,7 +2773,7 @@ const parserFactory = (tokens = defaultRegistry$1) => {
           parser.allowRegexp(); //regexp as literal is a "prefix operator"
           const {value: token} = parser.lookAhead();
           if (!tokens.hasPrefix(token)) {
-            return null; //todo maybe throw ?
+            return null;
           }
           const left = tokens.getPrefix(token).parse(parser, params);
           return parseInfix(parser, params, left, precedence);
@@ -2766,7 +2789,7 @@ const parserFactory = (tokens = defaultRegistry$1) => {
             body: parseModuleItemList(parser, params)
           });
         },
-      }, tokenStream, 'lookAhead', 'next', 'eat', 'allowRegexp', 'disallowRegexp'),
+      }, tokenStream, 'lookAhead', 'next', 'eat', 'allowRegexp', 'disallowRegexp', 'allowRightBrace', 'disallowRightBrace'),
       tokens);
 
     return parser;
@@ -2779,7 +2802,7 @@ const parseModule = program => {
   return parse(program).module();
 };
 
-const parseExpression$1 = (expression,precedence = -1, params = 0) => {
+const parseExpression$1 = (expression, precedence = -1, params = 0) => {
   const parse = parserFactory();
   return parse(expression).expression(precedence, params);
 };
@@ -4421,11 +4444,154 @@ var literals = plan()
   .test('parse (")")', t => {
     t.deepEqual(parse('(")")'), {"type": "Literal", "value": ")"});
   })
-  .only('parse `foo`', t => {
+  .test('parse `foo`', t => {
     t.deepEqual(parse('`foo`'), {
-      "type": "TemplateLiteral", expressions: [], quasis: [
-        {type: 'TemplateElement', tail: true, value: {raw: 'foo', cooked: 'foo'}},
-      ]
+      type: 'TemplateLiteral',
+      expressions: [],
+      quasis:
+        [{
+          type: 'TemplateElement',
+          value: {cooked: 'foo', raw: 'foo'},
+          tail: true
+        }]
+    });
+  })
+  .test('parse `foo ${bar}`', t => {
+    t.deepEqual(parse('`foo ${bar}`'), {
+      type: 'TemplateLiteral',
+      expressions: [{type: 'Identifier', name: 'bar'}],
+      quasis:
+        [{
+          type: 'TemplateElement',
+          value: {cooked: 'foo ', raw: 'foo '},
+          tail: false
+        },
+          {
+            type: 'TemplateElement',
+            value: {cooked: '', raw: ''},
+            tail: true
+          }]
+    });
+  })
+  .test('parse `foo ${bar} baz`', t => {
+    t.deepEqual(parse('`foo ${bar} baz`'), {
+      type: 'TemplateLiteral',
+      expressions: [{type: 'Identifier', name: 'bar'}],
+      quasis:
+        [{
+          type: 'TemplateElement',
+          value: {cooked: 'foo ', raw: 'foo '},
+          tail: false
+        },
+          {
+            type: 'TemplateElement',
+            value: {cooked: ' baz', raw: ' baz'},
+            tail: true
+          }]
+    });
+  })
+  .test('parse `foo ${{bar}.bar}`', t => {
+    t.deepEqual(parse('`foo ${{bar}.bar}`'), {
+      type: 'TemplateLiteral',
+      expressions:
+        [{
+          type: 'MemberExpression',
+          object:
+            {
+              type: 'ObjectExpression',
+              properties:
+                [{
+                  type: 'Property',
+                  key: {type: 'Identifier', name: 'bar'},
+                  value: {type: 'Identifier', name: 'bar'},
+                  kind: 'init',
+                  computed: false,
+                  method: false,
+                  shorthand: true
+                }]
+            },
+          computed: false,
+          property: {type: 'Identifier', name: 'bar'}
+        }],
+      quasis:
+        [{
+          type: 'TemplateElement',
+          value: {cooked: 'foo ', raw: 'foo '},
+          tail: false
+        },
+          {
+            type: 'TemplateElement',
+            value: {cooked: '', raw: ''},
+            tail: true
+          }]
+    });
+  })
+  .test('parse `foo ${{bar:{}}}.bar`', t => {
+    t.deepEqual(parse('`foo ${{bar:{}}}.bar`'), {
+      type: 'TemplateLiteral',
+      expressions:
+        [{
+          type: 'ObjectExpression',
+          properties:
+            [{
+              type: 'Property',
+              key: {type: 'Identifier', name: 'bar'},
+              value: {type: 'ObjectExpression', properties: []},
+              kind: 'init',
+              computed: false,
+              method: false,
+              shorthand: false
+            }]
+        }],
+      quasis:
+        [{
+          type: 'TemplateElement',
+          value: {cooked: 'foo ', raw: 'foo '},
+          tail: false
+        },
+          {
+            type: 'TemplateElement',
+            value: {cooked: '.bar', raw: '.bar'},
+            tail: true
+          }]
+    });
+  })
+  .test('parse `foo ${ `blah: ${4+3}`}`', t => {
+    t.deepEqual(parse('`foo ${ `blah: ${4+3}`}`'), {
+      type: 'TemplateLiteral',
+      expressions:
+        [{
+          type: 'TemplateLiteral',
+          expressions:
+            [{
+              type: 'BinaryExpression',
+              left: {type: 'Literal', value: 4},
+              right: {type: 'Literal', value: 3},
+              operator: '+'
+            }],
+          quasis:
+            [{
+              type: 'TemplateElement',
+              value: {cooked: 'blah: ', raw: 'blah: '},
+              tail: false
+            },
+              {
+                type: 'TemplateElement',
+                value: {cooked: '', raw: ''},
+                tail: true
+              }]
+        }],
+      quasis:
+        [{
+          type: 'TemplateElement',
+          value: {cooked: 'foo ', raw: 'foo '},
+          tail: false
+        },
+          {
+            type: 'TemplateElement',
+            value: {cooked: '', raw: ''},
+            tail: true
+          }]
     });
   });
 

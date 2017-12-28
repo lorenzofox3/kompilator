@@ -107,10 +107,12 @@ const parsePropertyDefinition = composeArityTwo(Property, (parser, params) => {
 const parsePropertyList = asPropertyList(parsePropertyDefinition);
 export const parseObjectLiteralExpression = composeArityTwo(ObjectExpression, (parser, params) => {
   parser.expect('{');
+  const resume = parser.allowRightBrace();
   const node = {
     properties: parsePropertyList(parser, params)
   };
   parser.expect('}');
+  resume();
   return node;
 });
 

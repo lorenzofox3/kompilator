@@ -23,12 +23,7 @@ todo: later we can give ability to the consumer to configure the scanner to perf
 //The consumer (like a parser) will have to handle the syntactic state and the token evaluation by itself
 export const lexemes = (code, scanner) => {
   let context = syntacticFlags.allowRegexp | syntacticFlags.allowRightBrace;
-  let previousContext = context;
   const source = sourceStream(code);
-  const holdContext = fn => () => {
-    previousContext = context;
-    fn();
-  };
   return {
     * [Symbol.iterator] () {
       while (true) {
@@ -38,21 +33,22 @@ export const lexemes = (code, scanner) => {
         yield scanner(source, context);
       }
     },
-    restoreContext () {
-      context = previousContext
-    },
-    allowRegexp: holdContext(() => {
+    allowRegexp: () => {
       context |= syntacticFlags.allowRegexp;
-    }),
-    disallowRegexp: holdContext(() => {
+    },
+    disallowRegexp: () => {
       context &= ~syntacticFlags.allowRegexp;
-    }),
-    allowRightBrace: holdContext(() => { // as punctuator vs template middle/tail
+    },
+    allowRightBrace: () => { // as punctuator vs template middle/tail
+      const current = context;
       context |= syntacticFlags.allowRightBrace;
-    }),
-    disallowRightBrace: holdContext(() => {
+      return () => context = current;
+    },
+    disallowRightBrace: () => {
+      const current = context;
       context &= ~syntacticFlags.allowRightBrace;
-    }),
+      return () => context = current;
+    },
     loc () {
       return source.loc();
     }
@@ -67,6 +63,8 @@ const defaultOptions = {
   filter: defaultFilter
 };
 
+
+//todo clean that shit ...
 // a standalone tokenizer (ie uses some heuristics based on the last meaningful token to know how to scan a slash)
 // https://stackoverflow.com/questions/5519596/when-parsing-javascript-what-determines-the-meaning-of-a-slash
 export const tokenize = function* (code, {scanner = defaultScanner, tokenRegistry = defaultRegistry, filter, evaluate} = defaultOptions) {

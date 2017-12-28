@@ -32,7 +32,7 @@ const parserFactory = (tokens = defaultRegistry) => {
           parser.allowRegexp(); //regexp as literal is a "prefix operator"
           const {value: token} = parser.lookAhead();
           if (!tokens.hasPrefix(token)) {
-            return null; //todo maybe throw ?
+            return null;
           }
           const left = tokens.getPrefix(token).parse(parser, params);
           return parseInfix(parser, params, left, precedence);
@@ -48,7 +48,7 @@ const parserFactory = (tokens = defaultRegistry) => {
             body: parseModuleItemList(parser, params)
           });
         },
-      }, tokenStream, 'lookAhead', 'next', 'eat', 'allowRegexp', 'disallowRegexp'),
+      }, tokenStream, 'lookAhead', 'next', 'eat', 'allowRegexp', 'disallowRegexp', 'allowRightBrace', 'disallowRightBrace'),
       tokens);
 
     return parser;
@@ -61,7 +61,7 @@ export const parseModule = program => {
   return parse(program).module();
 };
 
-export const parseExpression = (expression,precedence = -1, params = 0) => {
+export const parseExpression = (expression, precedence = -1, params = 0) => {
   const parse = parserFactory();
   return parse(expression).expression(precedence, params);
 };

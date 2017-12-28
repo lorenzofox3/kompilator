@@ -131,10 +131,155 @@ export default zora()
   .test('parse (")")', t => {
     t.deepEqual(parse('(")")'), {"type": "Literal", "value": ")"})
   })
-  .only('parse `foo`', t => {
+  .test('parse `foo`', t => {
     t.deepEqual(parse('`foo`'), {
-      "type": "TemplateLiteral", expressions: [], quasis: [
-        {type: 'TemplateElement', tail: true, value: {raw: 'foo', cooked: 'foo'}},
-      ]
-    })
+      type: 'TemplateLiteral',
+      expressions: [],
+      quasis:
+        [{
+          type: 'TemplateElement',
+          value: {cooked: 'foo', raw: 'foo'},
+          tail: true
+        }]
+    });
   })
+  .test('parse `foo ${bar}`', t => {
+    t.deepEqual(parse('`foo ${bar}`'), {
+      type: 'TemplateLiteral',
+      expressions: [{type: 'Identifier', name: 'bar'}],
+      quasis:
+        [{
+          type: 'TemplateElement',
+          value: {cooked: 'foo ', raw: 'foo '},
+          tail: false
+        },
+          {
+            type: 'TemplateElement',
+            value: {cooked: '', raw: ''},
+            tail: true
+          }]
+    });
+  })
+  .test('parse `foo ${bar} baz`', t => {
+    t.deepEqual(parse('`foo ${bar} baz`'), {
+      type: 'TemplateLiteral',
+      expressions: [{type: 'Identifier', name: 'bar'}],
+      quasis:
+        [{
+          type: 'TemplateElement',
+          value: {cooked: 'foo ', raw: 'foo '},
+          tail: false
+        },
+          {
+            type: 'TemplateElement',
+            value: {cooked: ' baz', raw: ' baz'},
+            tail: true
+          }]
+    });
+  })
+  .test('parse `foo ${{bar}.bar}`', t => {
+    t.deepEqual(parse('`foo ${{bar}.bar}`'), {
+      type: 'TemplateLiteral',
+      expressions:
+        [{
+          type: 'MemberExpression',
+          object:
+            {
+              type: 'ObjectExpression',
+              properties:
+                [{
+                  type: 'Property',
+                  key: {type: 'Identifier', name: 'bar'},
+                  value: {type: 'Identifier', name: 'bar'},
+                  kind: 'init',
+                  computed: false,
+                  method: false,
+                  shorthand: true
+                }]
+            },
+          computed: false,
+          property: {type: 'Identifier', name: 'bar'}
+        }],
+      quasis:
+        [{
+          type: 'TemplateElement',
+          value: {cooked: 'foo ', raw: 'foo '},
+          tail: false
+        },
+          {
+            type: 'TemplateElement',
+            value: {cooked: '', raw: ''},
+            tail: true
+          }]
+    });
+  })
+  .test('parse `foo ${{bar:{}}}.bar`', t => {
+    t.deepEqual(parse('`foo ${{bar:{}}}.bar`'), {
+      type: 'TemplateLiteral',
+      expressions:
+        [{
+          type: 'ObjectExpression',
+          properties:
+            [{
+              type: 'Property',
+              key: {type: 'Identifier', name: 'bar'},
+              value: {type: 'ObjectExpression', properties: []},
+              kind: 'init',
+              computed: false,
+              method: false,
+              shorthand: false
+            }]
+        }],
+      quasis:
+        [{
+          type: 'TemplateElement',
+          value: {cooked: 'foo ', raw: 'foo '},
+          tail: false
+        },
+          {
+            type: 'TemplateElement',
+            value: {cooked: '.bar', raw: '.bar'},
+            tail: true
+          }]
+    });
+  })
+  .test('parse `foo ${ `blah: ${4+3}`}`', t => {
+    t.deepEqual(parse('`foo ${ `blah: ${4+3}`}`'), {
+      type: 'TemplateLiteral',
+      expressions:
+        [{
+          type: 'TemplateLiteral',
+          expressions:
+            [{
+              type: 'BinaryExpression',
+              left: {type: 'Literal', value: 4},
+              right: {type: 'Literal', value: 3},
+              operator: '+'
+            }],
+          quasis:
+            [{
+              type: 'TemplateElement',
+              value: {cooked: 'blah: ', raw: 'blah: '},
+              tail: false
+            },
+              {
+                type: 'TemplateElement',
+                value: {cooked: '', raw: ''},
+                tail: true
+              }]
+        }],
+      quasis:
+        [{
+          type: 'TemplateElement',
+          value: {cooked: 'foo ', raw: 'foo '},
+          tail: false
+        },
+          {
+            type: 'TemplateElement',
+            value: {cooked: '', raw: ''},
+            tail: true
+          }]
+    });
+  })
+
+

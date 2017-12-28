@@ -6,6 +6,7 @@ import {parseClassMethod} from "./function";
 
 const parseClassElementList = (parser, params, elements = []) => {
   const {value: next} = parser.lookAhead();
+
   if (next === parser.get('}')) {
     return elements;
   }
@@ -18,10 +19,12 @@ const parseClassElementList = (parser, params, elements = []) => {
 };
 export const parseClassBody = composeArityTwo(ClassBody, (parser, params) => {
   parser.expect('{');
+  const resume = parser.allowRightBrace();
   const node = {
     body: parseClassElementList(parser, params)
   };
   parser.expect('}');
+  resume();
   return node;
 });
 

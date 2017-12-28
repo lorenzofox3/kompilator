@@ -24,10 +24,12 @@ export const parseStatementList = (parser, params, statements = []) => {
 };
 export const parseBlockStatement = composeArityTwo(ast.BlockStatement, (parser, params) => {
   parser.expect('{');
+  const resume = parser.allowRightBrace();
   const node = {
     body: parseStatementList(parser, params)
   };
   parser.expect('}');
+  resume();
   return node;
 });
 export const parseStatement = (parser, params) => {

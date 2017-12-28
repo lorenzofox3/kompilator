@@ -7,6 +7,7 @@ import {
 import * as ast from "./ast";
 import {toAssignable} from "./asAssign";
 import {parseIdentifierName} from "./statements";
+import {categories} from "../../tokenizer/src/tokens";
 
 // expressions based on Javascript operators whether they are "prefix" or "infix"
 // Note: Functions and Class expressions, Object literals and Array literals are in their own files
@@ -64,21 +65,32 @@ export const parseYieldExpression = (parser, params) => {
   }
   return parseIdentifierName(parser, params);
 };
-export const parseTemplateElement = composeArityTwo(ast.TemplateElement,(parser, params) => {
+export const parseTemplateElement = composeArityTwo(ast.TemplateElement, (parser, params) => {
   const {value: next} = parser.next();
   return {
+    tail: (next.type === categories.TemplateTail || next.type === categories.Template),
     value: {
-      raw: next.rawValue,
+      raw: next.value,
       cooked: next.value
     }
   };
 });
-export const parseTemplateLiteralExpression = composeArityTwo(ast.TemplateLiteral, (parser, params) => {
-  const node = {
-    expressions: [],
-    quasis: [parseTemplateElement(parser, params)]
-  };
+const parseTemplateElementList = (parser, params, list = {quasis: [], expressions: []}) => {
+  const {value: next} = parser.lookAhead();
+  list.quasis.push(parseTemplateElement(parser, params));
 
+  if (next.type === categories.TemplateTail || next.type === categories.Template) {
+    return list;
+  }
+
+  list.expressions.push(parser.expression(-1, params | grammarParams.in));
+
+  return parseTemplateElementList(parser, params, list);
+};
+export const parseTemplateLiteralExpression = composeArityTwo(ast.TemplateLiteral, (parser, params) => {
+  const resume = parser.disallowRightBrace();
+  const node = parseTemplateElementList(parser, params);
+  resume();
   return node;
 });
 

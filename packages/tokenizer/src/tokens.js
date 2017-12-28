@@ -55,16 +55,20 @@ export const tokenRegistry = () => {
     get (key) {
       return tokenMap.get(key)
     },
-    isReserved(symbol){
+    isReserved (symbol) {
       return reservedKeywords.includes(symbol)
     },
     evaluate (lexeme) {
       if (!tokenMap.has(lexeme.rawValue)) {
         switch (lexeme.type) {
+          case categories.TemplateTail:
+          case categories.Template:
+            return Object.assign(lexeme, {value: lexeme.rawValue.slice(1, -1)});
+          case categories.TemplateHead:
+          case categories.TemplateMiddle:
+            return Object.assign(lexeme, {value: lexeme.rawValue.slice(1, -2)});
           case categories.StringLiteral:
-            return Object.assign(lexeme, {
-              value: lexeme.rawValue.substr(1, lexeme.rawValue.length - 2)
-            });
+            return Object.assign(lexeme, {value: lexeme.rawValue.substr(1, lexeme.rawValue.length - 2)});
           case categories.NumericLiteral:
             return Object.assign(lexeme, {value: Number(lexeme.rawValue)});
           case categories.RegularExpressionLiteral:
